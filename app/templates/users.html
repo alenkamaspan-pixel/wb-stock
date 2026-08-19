@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Пользователи{% endblock %}
+{% block content %}
+<h1>Пользователи</h1>
+
+<div class="card">
+  <h2>Добавить пользователя</h2>
+  <form class="inline" method="post" action="/users/new">
+    <div><label>Логин</label><input type="text" name="username" required></div>
+    <div><label>Пароль</label><input type="password" name="password" required></div>
+    <div><label>Роль</label>
+      <select name="role">
+        <option value="manager">manager — может вносить движения</option>
+        <option value="viewer">viewer — только просмотр</option>
+        <option value="admin">admin — полный доступ</option>
+      </select>
+    </div>
+    <button type="submit">Добавить</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Список пользователей</h2>
+  <table>
+    <thead><tr><th>Логин</th><th>Роль</th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr><td>{{ u.username }}</td><td>{{ u.role }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

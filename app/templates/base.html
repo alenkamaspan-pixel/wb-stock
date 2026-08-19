@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Склад{% endblock %} — WB Stock</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% if user %}
+  <div class="topbar">
+    <div class="brand">📦 WB Stock</div>
+    <nav>
+      <a href="/">Остатки</a>
+      <a href="/movements">Движения</a>
+      <a href="/products">Товары</a>
+      <a href="/warehouses">Склады</a>
+      {% if user.role == 'admin' %}<a href="/users">Пользователи</a>{% endif %}
+      <a href="/logout">Выйти ({{ user.username }})</a>
+    </nav>
+  </div>
+  {% endif %}
+  <div class="container">
+    {% if request.args.get('ok') %}<div class="flash ok">{{ request.args.get('ok') }}</div>{% endif %}
+    {% if request.args.get('error') %}<div class="flash error">{{ request.args.get('error') }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

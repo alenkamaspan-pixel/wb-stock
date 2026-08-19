@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Склады{% endblock %}
+{% block content %}
+<h1>Склады</h1>
+
+{% if can_edit %}
+<div class="card">
+  <h2>Добавить склад</h2>
+  <form class="inline" method="post" action="/warehouses/new">
+    <div><label>Название (внутреннее)</label><input type="text" name="name" required></div>
+    <div><label>ID склада в WB (если синхронизируется)</label><input type="number" name="wb_warehouse_id"></div>
+    <div><label>Синхронизировать с WB?</label>
+      <select name="is_synced_to_wb"><option value="1">Да</option><option value="0">Нет — внутренний склад</option></select>
+    </div>
+    <button type="submit">Добавить</button>
+  </form>
+  <form method="post" action="/warehouses/import-from-wb" style="margin-top:10px;">
+    <button type="submit" class="btn-secondary">Импортировать список складов из WB</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Список складов</h2>
+  <table>
+    <thead><tr><th>Название</th><th>ID в WB</th><th>Синк с WB</th><th>Активен</th></tr></thead>
+    <tbody>
+      {% for w in warehouses %}
+      <tr>
+        <td>{{ w.name }}</td>
+        <td class="muted">{{ w.wb_warehouse_id or '—' }}</td>
+        <td>{{ 'да' if w.is_synced_to_wb else 'нет' }}</td>
+        <td>{{ 'да' if w.is_active else 'нет' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

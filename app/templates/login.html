@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Вход — WB Stock</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="card login-card">
+      <h1>Вход</h1>
+      {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+      <form method="post" action="/login">
+        <label>Логин</label>
+        <input type="text" name="username" required style="width:100%; margin-bottom:12px;">
+        <label>Пароль</label>
+        <input type="password" name="password" required style="width:100%; margin-bottom:16px;">
+        <button type="submit" style="width:100%;">Войти</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

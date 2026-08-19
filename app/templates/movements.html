@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Движения{% endblock %}
+{% block content %}
+<h1>Движения товара</h1>
+
+{% if can_edit %}
+<div class="card">
+  <h2>Приход товара</h2>
+  <form class="inline" method="post" action="/movements/income">
+    <div><label>Товар</label>
+      <select name="product_id" required>
+        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Склад</label>
+      <select name="warehouse_id" required>
+        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
+    <div><label>Комментарий</label><input type="text" name="comment" placeholder="например, номер накладной"></div>
+    <button type="submit">Добавить приход</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Перемещение между складами</h2>
+  <form class="inline" method="post" action="/movements/transfer">
+    <div><label>Товар</label>
+      <select name="product_id" required>
+        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Откуда</label>
+      <select name="from_warehouse_id" required>
+        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Куда</label>
+      <select name="to_warehouse_id" required>
+        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
+    <div><label>Комментарий</label><input type="text" name="comment"></div>
+    <button type="submit">Переместить</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Списание</h2>
+  <form class="inline" method="post" action="/movements/writeoff">
+    <div><label>Товар</label>
+      <select name="product_id" required>
+        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Склад</label>
+      <select name="warehouse_id" required>
+        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
+    <div><label>Причина</label><input type="text" name="comment" placeholder="брак, недостача при инвентаризации..." required></div>
+    <button type="submit">Списать</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>История движений</h2>
+  <table>
+    <thead>
+      <tr><th>Дата</th><th>Товар</th><th>Склад</th><th>Тип</th><th>Кол-во</th><th>Источник</th><th>Комментарий</th></tr>
+    </thead>
+    <tbody>
+      {% for m in movements %}
+      <tr>
+        <td>{{ m.created_at | dtfmt }}</td>
+        <td>{{ m.product_name or '—' }}</td>
+        <td>{{ m.warehouse_name or '—' }}</td>
+        <td>{{ m.movement_type }}</td>
+        <td class="{{ 'qty-negative' if m.delta < 0 else '' }}">{{ '+' if m.delta > 0 else '' }}{{ m.delta }}</td>
+        <td class="muted">{{ 'WB' if m.source == 'wb_sync' else (m.created_by_username or 'вручную') }}</td>
+        <td class="muted">{{ m.comment or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

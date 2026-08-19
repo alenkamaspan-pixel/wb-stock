@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Товары{% endblock %}
+{% block content %}
+<h1>Товары</h1>
+
+{% if can_edit %}
+<div class="card">
+  <h2>Добавить товар</h2>
+  <form class="inline" method="post" action="/products/new">
+    <div><label>Ваш артикул (SKU)</label><input type="text" name="sku" required></div>
+    <div><label>Название</label><input type="text" name="name" required></div>
+    <div><label>Артикул WB (nmId)</label><input type="number" name="nm_id"></div>
+    <div><label>Штрихкод (barcode)</label><input type="text" name="barcode"></div>
+    <button type="submit">Добавить</button>
+  </form>
+  <p class="muted">Штрихкод обязателен, если хотите, чтобы остаток по этому товару автоматически отправлялся в WB.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Список товаров</h2>
+  <table>
+    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th></tr></thead>
+    <tbody>
+      {% for p in products %}
+      <tr><td>{{ p.sku }}</td><td>{{ p.name }}</td><td>{{ p.nm_id or '—' }}</td><td>{{ p.barcode or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
