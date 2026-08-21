@@ -1,19 +1,22 @@
 """
 Бизнес-логика синхронизации с WB.
 
+Приложение работает только на чтение — оно НЕ отправляет остатки обратно в
+WB. Тем, что видят покупатели на карточке (доступность товара), занимается
+каждый склад самостоятельно, вне этого приложения. Здесь только считаем
+свою собственную картину: сколько где лежит, по данным о приходе/
+перемещениях (вносите вручную) и о заказах/отменах (подтягиваем из WB).
+
 Логика по умолчанию (можно скорректировать под себя после первого теста на
 реальных данных):
 
 1. Новый заказ (сборочное задание) появился в WB -> считаем, что товар уже
    "зарезервирован на отгрузку", и сразу списываем его с остатка того
-   склада, с которого WB просит собрать заказ. Это самый безопасный момент
-   для списания: как только заказ висит в "новых" — его нельзя продать
-   ещё раз.
+   склада, с которого WB просит собрать заказ, в НАШЕЙ базе. Это самый
+   безопасный момент для списания: как только заказ висит в "новых" — его
+   нельзя продать ещё раз.
 2. Если заказ отменяется (клиент отменил / брак при сборке и т.п.) —
-   списание отменяется, товар возвращается на остаток.
-3. После любых изменений — пересчитываем остаток по затронутым товарам и
-   складам и отправляем актуальные цифры в WB (PUT /api/v3/stocks), чтобы
-   карточка не показывала неверную доступность.
+   списание отменяется, товар возвращается на остаток — тоже только у нас.
 
 Отдельно от этого файла в README описано, как позже добавить сверку с
 Statistics API (/supplier/sales) — она не меняет остаток автоматически, а
@@ -94,39 +97,6 @@ def _add_movement(conn, product_id, warehouse_id, movement_type, delta, source,
     )
 
 
-def _push_stock_for_touched(conn: sqlite3.Connection, client: WBClient, touched: set[tuple[int, int]]) -> int:
-    """touched — множество пар (product_id, warehouse_id), которые нужно перепослать в WB.
-    Возвращает количество отправленных позиций."""
-    by_warehouse: dict[int, list[int]] = {}
-    for product_id, warehouse_id in touched:
-        by_warehouse.setdefault(warehouse_id, []).append(product_id)
-
-    pushed = 0
-    for warehouse_id, product_ids in by_warehouse.items():
-        warehouse = conn.execute("SELECT * FROM warehouses WHERE id = ?", (warehouse_id,)).fetchone()
-        if not warehouse or not warehouse["is_synced_to_wb"] or not warehouse["wb_warehouse_id"]:
-            continue
-        items = []
-        for product_id in product_ids:
-            product = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-            if not product or not product["barcode"]:
-                continue  # без баркода WB не примет остаток по этому товару
-            qty = max(get_current_stock(conn, product_id, warehouse_id), 0)
-            items.append({"sku": product["barcode"], "amount": qty})
-        if items:
-            client.update_stocks(warehouse["wb_warehouse_id"], items)
-            pushed += len(items)
-    return pushed
-
-
-def push_single(conn: sqlite3.Connection, client: WBClient, product_id: int, warehouse_id: int) -> None:
-    """Отправить в WB актуальный остаток по одному товару/складу после ручной операции."""
-    try:
-        _push_stock_for_touched(conn, client, {(product_id, warehouse_id)})
-    except WBApiError:
-        pass  # не блокируем ручную операцию, если WB недоступен — досинхронизируется по расписанию
-
-
 def sync_once(client: WBClient | None = None) -> dict:
     """Один цикл синхронизации. Открывает собственное соединение с БД —
     можно безопасно вызывать и из фонового потока, и из обработчика запроса."""
@@ -140,7 +110,6 @@ def sync_once(client: WBClient | None = None) -> dict:
     run_id = cur.lastrowid
     conn.commit()  # фиксируем run сразу отдельной транзакцией, чтобы её не смыло rollback'ом ниже
 
-    touched: set[tuple[int, int]] = set()
     log_lines: list[str] = []
     orders_fetched = 0
     movements_created = 0
@@ -184,7 +153,6 @@ def sync_once(client: WBClient | None = None) -> dict:
                     comment=f"Заказ WB {wb_order_id}",
                 )
                 movements_created += 1
-                touched.add((product_id, warehouse["id"]))
             else:
                 log_lines.append(
                     f"Заказ {wb_order_id}: склад WB id={wb_warehouse_id} не сопоставлен ни с одним "
@@ -218,10 +186,6 @@ def sync_once(client: WBClient | None = None) -> dict:
                     )
                     conn.execute("UPDATE wb_orders SET stock_deducted = 0 WHERE id = ?", (order["id"],))
                     movements_created += 1
-                    touched.add((order["product_id"], order["warehouse_id"]))
-
-        # 3. Отправляем актуальные остатки обратно в WB по всем затронутым товарам/складам
-        stock_pushed = _push_stock_for_touched(conn, client, touched)
 
     except WBApiError as e:
         # Откатываем все несохранённые движения/товары из этой попытки — синк
@@ -237,15 +201,15 @@ def sync_once(client: WBClient | None = None) -> dict:
 
     conn.execute(
         """UPDATE sync_runs
-           SET status = 'success', orders_fetched = ?, movements_created = ?, stock_pushed = ?,
+           SET status = 'success', orders_fetched = ?, movements_created = ?,
                message = ?, finished_at = ?
            WHERE id = ?""",
-        (orders_fetched, movements_created, stock_pushed,
+        (orders_fetched, movements_created,
          "\n".join(log_lines) if log_lines else None, now_iso(), run_id),
     )
     conn.commit()
     conn.close()
     return {
         "status": "success", "orders_fetched": orders_fetched,
-        "movements_created": movements_created, "stock_pushed": stock_pushed,
+        "movements_created": movements_created,
     }

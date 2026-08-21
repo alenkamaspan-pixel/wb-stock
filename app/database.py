@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS warehouses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    -- ID склада в WB — нужен только чтобы сопоставлять входящие заказы с
+    -- вашим складом. Приложение никогда не пишет по этому ID обратно в WB.
     wb_warehouse_id INTEGER UNIQUE,
-    is_synced_to_wb INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
@@ -81,7 +82,6 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     status TEXT NOT NULL DEFAULT 'running',
     orders_fetched INTEGER DEFAULT 0,
     movements_created INTEGER DEFAULT 0,
-    stock_pushed INTEGER DEFAULT 0,
     message TEXT
 );
 """

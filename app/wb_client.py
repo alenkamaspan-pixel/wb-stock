@@ -10,8 +10,14 @@ https://openapi.wildberries.ru/marketplace/api/en/ — все обращения
 
 Используются два разных токена (можно выпустить один токен сразу с двумя
 скоупами в личном кабинете: Настройки → Доступ к API):
-  - Marketplace API — склады, остатки, заказы/сборочные задания FBS
-  - Statistics API  — фактические продажи/возвраты, для сверки
+  - Marketplace API — склады, заказы/сборочные задания FBS (только чтение)
+  - Statistics API  — фактические продажи/возвраты, для сверки (только чтение)
+
+Приложение НИЧЕГО не пишет обратно в WB — только читает заказы и статусы.
+Управление тем, что видят покупатели на карточке товара (доступность,
+остатки на витрине), полностью остаётся на стороне каждого склада
+самостоятельно, вне этого приложения. Поэтому токен для него достаточно
+выпускать с галочкой «Только на чтение».
 """
 import json
 import time
@@ -83,22 +89,6 @@ class WBClient:
         url = f"{self.marketplace_base}/api/v3/warehouses"
         data = self._request("GET", url, self.marketplace_token)
         return data or []
-
-    def get_stocks(self, wb_warehouse_id: int, skus: list[str]) -> list[dict]:
-        """Текущие остатки по списку баркодов на конкретном складе (по версии WB)."""
-        url = f"{self.marketplace_base}/api/v3/stocks/{wb_warehouse_id}"
-        data = self._request("POST", url, self.marketplace_token, json={"skus": skus})
-        return (data or {}).get("stocks", [])
-
-    def update_stocks(self, wb_warehouse_id: int, items: list[dict]) -> None:
-        """
-        Отправить актуальные остатки в WB.
-        items: [{"sku": "<баркод>", "amount": <int>}, ...]
-        """
-        if not items:
-            return
-        url = f"{self.marketplace_base}/api/v3/stocks/{wb_warehouse_id}"
-        self._request("PUT", url, self.marketplace_token, json={"stocks": items})
 
     def get_new_orders(self) -> list[dict]:
         """Новые сборочные задания (заказы), ещё не взятые в работу."""
