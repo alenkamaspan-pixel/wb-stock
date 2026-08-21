@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Изменить товар{% endblock %}
+{% block content %}
+<h1>Изменить товар</h1>
+
+<div class="card">
+  <form class="inline" method="post" action="/products/{{ product.id }}/edit">
+    <div><label>Ваш артикул (SKU)</label><input type="text" name="sku" value="{{ product.sku }}" required></div>
+    <div><label>Название</label><input type="text" name="name" value="{{ product.name }}" required></div>
+    <div><label>Артикул WB (nmId)</label><input type="number" name="nm_id" value="{{ product.nm_id or '' }}"></div>
+    <div><label>Штрихкод (barcode)</label><input type="text" name="barcode" value="{{ product.barcode or '' }}"></div>
+    <button type="submit">Сохранить</button>
+    <a href="/products" class="btn btn-secondary">Отмена</a>
+  </form>
+</div>
+{% endblock %}
