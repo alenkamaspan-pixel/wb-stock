@@ -1,5 +1,6 @@
 """Точка входа приложения: Flask-роуты, авторизация, фоновая синхронизация с WB."""
 import datetime as dt
+import sqlite3
 import threading
 import time
 
@@ -9,7 +10,7 @@ from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL
 from app.database import get_conn, init_db, now_iso
 from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
-from app.sync import sync_once, get_stock_table, get_current_stock, push_single
+from app.sync import sync_once, get_stock_table, get_current_stock
 from app.wb_client import WBClient, WBApiError
 
 app = Flask(__name__)
@@ -127,7 +128,6 @@ def movement_income():
          comment, user["id"], now_iso()),
     )
     g.db.commit()
-    push_single(g.db, WBClient(), product_id, warehouse_id)
     return redirect(url_for("movements_page", ok="Приход добавлен"))
 
 
@@ -149,7 +149,6 @@ def movement_writeoff():
          comment, user["id"], now_iso()),
     )
     g.db.commit()
-    push_single(g.db, WBClient(), product_id, warehouse_id)
     return redirect(url_for("movements_page", ok="Списание добавлено"))
 
 
@@ -187,8 +186,6 @@ def movement_transfer():
     in_id = in_cur.lastrowid
     g.db.execute("UPDATE stock_movements SET related_movement_id = ? WHERE id = ?", (in_id, out_id))
     g.db.commit()
-    push_single(g.db, WBClient(), product_id, from_warehouse_id)
-    push_single(g.db, WBClient(), product_id, to_warehouse_id)
     return redirect(url_for("movements_page", ok="Перемещение выполнено"))
 
 
@@ -221,6 +218,60 @@ def product_new():
     return redirect(url_for("products_page", ok="Товар добавлен"))
 
 
+@app.route("/products/<int:product_id>/edit", methods=["GET"])
+@login_required
+def product_edit_form(product_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("products_page", error="Недостаточно прав"))
+    product = g.db.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    if not product:
+        return redirect(url_for("products_page", error="Товар не найден"))
+    return render_template("product_edit.html", product=product)
+
+
+@app.route("/products/<int:product_id>/edit", methods=["POST"])
+@login_required
+def product_edit(product_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("products_page", error="Недостаточно прав"))
+    sku = request.form["sku"].strip()
+    name = request.form["name"].strip()
+    nm_id = request.form.get("nm_id", "").strip()
+    barcode = request.form.get("barcode", "").strip()
+    try:
+        g.db.execute(
+            "UPDATE products SET sku = ?, name = ?, nm_id = ?, barcode = ? WHERE id = ?",
+            (sku, name, int(nm_id) if nm_id else None, barcode or None, product_id),
+        )
+        g.db.commit()
+    except sqlite3.IntegrityError:
+        return redirect(url_for(
+            "product_edit_form", product_id=product_id,
+            error="Такой SKU, nmId или штрихкод уже используется другим товаром",
+        ))
+    return redirect(url_for("products_page", ok="Товар изменён"))
+
+
+@app.route("/products/<int:product_id>/delete", methods=["POST"])
+@login_required
+def product_delete(product_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("products_page", error="Недостаточно прав"))
+    try:
+        g.db.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        g.db.commit()
+    except sqlite3.IntegrityError:
+        return redirect(url_for(
+            "products_page",
+            error="Нельзя удалить: по этому товару уже есть движения или заказы. "
+                  "Если он больше не нужен — просто переименуйте его через «Изменить».",
+        ))
+    return redirect(url_for("products_page", ok="Товар удалён"))
+
+
 # --------------------------------------------------------------- warehouses
 @app.route("/warehouses")
 @login_required
@@ -237,17 +288,68 @@ def warehouse_new():
         return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     name = request.form["name"].strip()
     wb_warehouse_id = request.form.get("wb_warehouse_id", "").strip()
-    is_synced = request.form.get("is_synced_to_wb", "1") == "1"
     try:
         g.db.execute(
-            "INSERT INTO warehouses (name, wb_warehouse_id, is_synced_to_wb, is_active, created_at) "
-            "VALUES (?, ?, ?, 1, ?)",
-            (name, int(wb_warehouse_id) if wb_warehouse_id else None, 1 if is_synced else 0, now_iso()),
+            "INSERT INTO warehouses (name, wb_warehouse_id, is_active, created_at) VALUES (?, ?, 1, ?)",
+            (name, int(wb_warehouse_id) if wb_warehouse_id else None, now_iso()),
         )
         g.db.commit()
     except Exception as e:
         return redirect(url_for("warehouses_page", error=f"Не удалось добавить склад: {e}"))
     return redirect(url_for("warehouses_page", ok="Склад добавлен"))
+
+
+@app.route("/warehouses/<int:warehouse_id>/edit", methods=["GET"])
+@login_required
+def warehouse_edit_form(warehouse_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
+    warehouse = g.db.execute("SELECT * FROM warehouses WHERE id = ?", (warehouse_id,)).fetchone()
+    if not warehouse:
+        return redirect(url_for("warehouses_page", error="Склад не найден"))
+    return render_template("warehouse_edit.html", warehouse=warehouse)
+
+
+@app.route("/warehouses/<int:warehouse_id>/edit", methods=["POST"])
+@login_required
+def warehouse_edit(warehouse_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
+    name = request.form["name"].strip()
+    wb_warehouse_id = request.form.get("wb_warehouse_id", "").strip()
+    is_active = 1 if request.form.get("is_active") == "1" else 0
+    try:
+        g.db.execute(
+            "UPDATE warehouses SET name = ?, wb_warehouse_id = ?, is_active = ? WHERE id = ?",
+            (name, int(wb_warehouse_id) if wb_warehouse_id else None, is_active, warehouse_id),
+        )
+        g.db.commit()
+    except sqlite3.IntegrityError:
+        return redirect(url_for(
+            "warehouse_edit_form", warehouse_id=warehouse_id,
+            error="Такой ID склада в WB уже используется другим складом",
+        ))
+    return redirect(url_for("warehouses_page", ok="Склад изменён"))
+
+
+@app.route("/warehouses/<int:warehouse_id>/delete", methods=["POST"])
+@login_required
+def warehouse_delete(warehouse_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
+    try:
+        g.db.execute("DELETE FROM warehouses WHERE id = ?", (warehouse_id,))
+        g.db.commit()
+    except sqlite3.IntegrityError:
+        return redirect(url_for(
+            "warehouses_page",
+            error="Нельзя удалить: по этому складу уже есть движения или заказы. "
+                  "Если он больше не используется — отметьте его неактивным через «Изменить».",
+        ))
+    return redirect(url_for("warehouses_page", ok="Склад удалён"))
 
 
 @app.route("/warehouses/import-from-wb", methods=["POST"])
@@ -272,8 +374,7 @@ def warehouses_import():
         if exists:
             continue
         g.db.execute(
-            "INSERT INTO warehouses (name, wb_warehouse_id, is_synced_to_wb, is_active, created_at) "
-            "VALUES (?, ?, 1, 1, ?)",
+            "INSERT INTO warehouses (name, wb_warehouse_id, is_active, created_at) VALUES (?, ?, 1, ?)",
             (w.get("name", f"Склад WB {wb_id}"), wb_id, now_iso()),
         )
         added += 1
