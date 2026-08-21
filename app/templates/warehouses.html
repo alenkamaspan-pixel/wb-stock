@@ -8,12 +8,14 @@
   <h2>Добавить склад</h2>
   <form class="inline" method="post" action="/warehouses/new">
     <div><label>Название (внутреннее)</label><input type="text" name="name" required></div>
-    <div><label>ID склада в WB (если синхронизируется)</label><input type="number" name="wb_warehouse_id"></div>
-    <div><label>Синхронизировать с WB?</label>
-      <select name="is_synced_to_wb"><option value="1">Да</option><option value="0">Нет — внутренний склад</option></select>
-    </div>
+    <div><label>ID склада в WB</label><input type="number" name="wb_warehouse_id"></div>
     <button type="submit">Добавить</button>
   </form>
+  <p class="muted">
+    ID склада в WB нужен, чтобы приложение понимало, с какого именно вашего
+    склада WB просит собрать заказ, и списывало остаток с правильного места.
+    Если склад не привязан к WB (например, внутренний учётный) — оставьте поле пустым.
+  </p>
   <form method="post" action="/warehouses/import-from-wb" style="margin-top:10px;">
     <button type="submit" class="btn-secondary">Импортировать список складов из WB</button>
   </form>
@@ -23,14 +25,22 @@
 <div class="card">
   <h2>Список складов</h2>
   <table>
-    <thead><tr><th>Название</th><th>ID в WB</th><th>Синк с WB</th><th>Активен</th></tr></thead>
+    <thead><tr><th>Название</th><th>ID в WB</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for w in warehouses %}
       <tr>
         <td>{{ w.name }}</td>
         <td class="muted">{{ w.wb_warehouse_id or '—' }}</td>
-        <td>{{ 'да' if w.is_synced_to_wb else 'нет' }}</td>
         <td>{{ 'да' if w.is_active else 'нет' }}</td>
+        {% if can_edit %}
+        <td style="white-space:nowrap;">
+          <a href="/warehouses/{{ w.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+          <form method="post" action="/warehouses/{{ w.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить склад «{{ w.name }}»? Это возможно, только если по нему ещё не было движений — если были, лучше отметить его неактивным через «Изменить».');">
+            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+          </form>
+        </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

@@ -13,17 +13,31 @@
     <div><label>Штрихкод (barcode)</label><input type="text" name="barcode"></div>
     <button type="submit">Добавить</button>
   </form>
-  <p class="muted">Штрихкод обязателен, если хотите, чтобы остаток по этому товару автоматически отправлялся в WB.</p>
+  <p class="muted">Штрихкод важен: по нему приложение сопоставляет заказы из WB с вашим товаром.</p>
 </div>
 {% endif %}
 
 <div class="card">
   <h2>Список товаров</h2>
   <table>
-    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th></tr></thead>
+    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for p in products %}
-      <tr><td>{{ p.sku }}</td><td>{{ p.name }}</td><td>{{ p.nm_id or '—' }}</td><td>{{ p.barcode or '—' }}</td></tr>
+      <tr>
+        <td>{{ p.sku }}</td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.nm_id or '—' }}</td>
+        <td>{{ p.barcode or '—' }}</td>
+        {% if can_edit %}
+        <td style="white-space:nowrap;">
+          <a href="/products/{{ p.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+          <form method="post" action="/products/{{ p.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить товар «{{ p.name }}»? Это возможно, только если по нему ещё не было движений.');">
+            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
       {% endfor %}
     </tbody>
   </table>

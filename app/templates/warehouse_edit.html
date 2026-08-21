@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Изменить склад{% endblock %}
+{% block content %}
+<h1>Изменить склад</h1>
+
+<div class="card">
+  <form class="inline" method="post" action="/warehouses/{{ warehouse.id }}/edit">
+    <div><label>Название (внутреннее)</label><input type="text" name="name" value="{{ warehouse.name }}" required></div>
+    <div><label>ID склада в WB</label><input type="number" name="wb_warehouse_id" value="{{ warehouse.wb_warehouse_id or '' }}"></div>
+    <div>
+      <label>Активен</label>
+      <select name="is_active">
+        <option value="1" {% if warehouse.is_active %}selected{% endif %}>Да</option>
+        <option value="0" {% if not warehouse.is_active %}selected{% endif %}>Нет</option>
+      </select>
+    </div>
+    <button type="submit">Сохранить</button>
+    <a href="/warehouses" class="btn btn-secondary">Отмена</a>
+  </form>
+  <p class="muted">
+    Если склад больше не используется, но по нему уже есть движения или заказы —
+    удалить его нельзя (история важна), отметьте его неактивным вместо этого.
+  </p>
+</div>
+{% endblock %}
