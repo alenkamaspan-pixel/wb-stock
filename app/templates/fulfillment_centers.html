@@ -26,8 +26,9 @@
     <tbody>
       {% for f in ff_list %}
       {% set linked = warehouses | selectattr('fulfillment_center_id', 'equalto', f.id) | list %}
+      {% set ff_color = 'ff-color-' ~ (f.id % 6) %}
       <tr>
-        <td>{{ f.name }}</td>
+        <td><span class="ff-tag {{ ff_color }}">{{ f.name }}</span></td>
         <td class="muted">
           {{ linked | length }}{% if linked %} ({{ linked | map(attribute='name') | join(', ') }}){% endif %}
         </td>

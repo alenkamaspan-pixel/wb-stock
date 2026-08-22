@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Изменить ФФ{% endblock %}
 {% block content %}
-<h1>Изменить ФФ: {{ ff.name }}</h1>
+<h1>Изменить ФФ: <span class="ff-tag ff-color-{{ ff.id % 6 }}">{{ ff.name }}</span></h1>
 
 <div class="card">
   <form method="post" action="/fulfillment-centers/{{ ff.id }}/edit">

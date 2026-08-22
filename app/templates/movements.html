@@ -72,7 +72,7 @@
   <table>
     <thead>
       <tr>
-        <th>Дата</th><th>Товар</th><th>Склад</th><th>Тип</th><th>Кол-во</th><th>Источник</th><th>Комментарий</th>
+        <th>Дата</th><th>Товар</th><th>Склад</th><th>ФФ</th><th>Тип</th><th>Кол-во</th><th>Источник</th><th>Комментарий</th>
         {% if can_edit %}<th></th>{% endif %}
       </tr>
     </thead>
@@ -82,6 +82,12 @@
         <td>{{ m.created_at | dtfmt }}</td>
         <td>{{ m.product_name or '—' }}</td>
         <td>{{ m.warehouse_name or '—' }}</td>
+        <td>
+          {% if m.ff_name %}
+          {% set ff_color = 'ff-color-' ~ (m.ff_id % 6) %}
+          <span class="ff-tag {{ ff_color }}">{{ m.ff_name }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
         <td>{{ m.movement_type }}</td>
         <td class="{{ 'qty-negative' if m.delta < 0 else '' }}">{{ '+' if m.delta > 0 else '' }}{{ m.delta }}</td>
         <td class="muted">{{ 'WB' if m.source == 'wb_sync' else (m.created_by_username or 'вручную') }}</td>

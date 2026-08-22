@@ -39,7 +39,12 @@
       <tr>
         <td>{{ w.name }}</td>
         <td class="muted">{{ w.wb_warehouse_id or '—' }}</td>
-        <td class="muted">{{ w.ff_name or '—' }}</td>
+        <td>
+          {% if w.ff_name %}
+          {% set ff_color = 'ff-color-' ~ (w.ff_id % 6) %}
+          <span class="ff-tag {{ ff_color }}">{{ w.ff_name }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
         <td>{{ 'да' if w.is_active else 'нет' }}</td>
         {% if can_edit %}
         <td style="white-space:nowrap;">

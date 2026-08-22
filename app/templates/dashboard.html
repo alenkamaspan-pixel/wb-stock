@@ -22,7 +22,10 @@
 
 {% if product_totals %}
 <div class="card">
-  <h2>Итого по товарам (по всем ФФ и складам сразу)</h2>
+  <div class="ff-header">
+    <h2>Итого по товарам (по всем ФФ и складам сразу)</h2>
+    <div class="ff-total-badge {{ 'negative' if grand_total < 0 else '' }}">{{ grand_total }} шт. всего товара</div>
+  </div>
   <div class="stat-grid">
     {% for t in product_totals %}
     <div class="stat-tile {{ 'negative' if t.quantity < 0 else ('zero' if t.quantity == 0 else 'positive') }}">
@@ -36,9 +39,10 @@
 
 {% if ff_groups %}
   {% for group in ff_groups %}
-  <div class="card">
+  {% set ff_color = ('ff-color-' ~ (group.ff_id % 6)) if group.ff_id is not none else 'ff-color-none' %}
+  <div class="card ff-card {{ ff_color }}">
     <div class="ff-header">
-      <h2>{{ group.ff_name }}</h2>
+      <h2><span class="ff-tag {{ ff_color }}">{{ group.ff_name }}</span></h2>
       <div class="ff-total-badge {{ 'negative' if group.ff_total < 0 else '' }}">{{ group.ff_total }} шт. всего</div>
     </div>
 

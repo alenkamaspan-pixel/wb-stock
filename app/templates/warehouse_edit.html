@@ -14,6 +14,13 @@
         <option value="{{ f.id }}" {% if warehouse.fulfillment_center_id == f.id %}selected{% endif %}>{{ f.name }}</option>
         {% endfor %}
       </select>
+      {% if warehouse.fulfillment_center_id %}
+      <div style="margin-top:6px;">
+        {% for f in ff_list %}{% if f.id == warehouse.fulfillment_center_id %}
+        <span class="ff-tag ff-color-{{ f.id % 6 }}">{{ f.name }}</span>
+        {% endif %}{% endfor %}
+      </div>
+      {% endif %}
     </div>
     <div>
       <label>Активен</label>

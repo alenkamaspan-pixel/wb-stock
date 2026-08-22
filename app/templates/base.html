@@ -4,14 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Склад{% endblock %} — WB Stock</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Lora:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   {% if user %}
   <div class="topbar">
-    <div class="brand">📦 WB Stock</div>
+    <div class="brand">WB Stock</div>
     <nav>
       <a href="/">Остатки</a>
+      <a href="/analytics">Аналитика</a>
       <a href="/movements">Движения</a>
       <a href="/products">Товары</a>
       <a href="/warehouses">Склады</a>

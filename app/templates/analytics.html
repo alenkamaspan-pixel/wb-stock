@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Аналитика{% endblock %}
+{% block content %}
+<h1>Аналитика</h1>
+
+<div class="card">
+  <h2>Фильтры</h2>
+  <form class="filter-bar" method="get" action="/analytics">
+    <div><label>С даты</label><input type="date" name="date_from" value="{{ date_from }}"></div>
+    <div><label>По дату</label><input type="date" name="date_to" value="{{ date_to }}"></div>
+    <div><label>ФФ</label>
+      <select name="ff_id">
+        <option value="">— все ФФ —</option>
+        {% for f in ff_list %}<option value="{{ f.id }}" {% if ff_id == f.id %}selected{% endif %}>{{ f.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Товар</label>
+      <select name="product_id">
+        <option value="">— все товары —</option>
+        {% for p in products %}<option value="{{ p.id }}" {% if product_id == p.id %}selected{% endif %}>{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Окно скорости продаж (дней)</label>
+      <select name="velocity_window">
+        {% for w in [7, 14, 30, 60] %}<option value="{{ w }}" {% if velocity_window == w %}selected{% endif %}>{{ w }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><button type="submit">Применить</button></div>
+    <div><a href="/analytics" class="btn btn-secondary">Сбросить</a></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Итого за период ({{ date_from }} — {{ date_to }})</h2>
+  <div class="stat-grid">
+    <div class="stat-tile positive">
+      <div class="stat-label">Приход</div>
+      <div class="stat-value">+{{ period_totals.income }}</div>
+    </div>
+    <div class="stat-tile negative">
+      <div class="stat-label">Продано (нетто)</div>
+      <div class="stat-value">{{ period_totals.net_sold }}</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Отменено</div>
+      <div class="stat-value">{{ period_totals.reversal }}</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Списано</div>
+      <div class="stat-value">{{ period_totals.writeoff }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Динамика продаж по дням (МСК)</h2>
+  {% if daily_series %}
+  <div>
+    {% for d in daily_series %}
+    <div class="sparkbar-row">
+      <div class="muted" style="width:90px; flex:0 0 auto; font-size:12px;">{{ d.day }}</div>
+      <div class="sparkbar-track">
+        <div class="sparkbar-fill" style="width: {{ ((d.net_sold / max_daily) * 100) | round(1) if d.net_sold > 0 else 0 }}%;"></div>
+      </div>
+      <div style="width:60px; flex:0 0 auto; text-align:right; font-size:13px;">{{ d.net_sold }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">За выбранный период движений не было.</p>
+  {% endif %}
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <h2>Топ продаж (нетто, за период)</h2>
+    {% if ranking.top %}
+    <ul class="rank-list">
+      {% for r in ranking.top %}
+      <li><span>{{ r.name }} <span class="muted">({{ r.sku }})</span></span><span class="rank-qty">{{ r.net_sold }}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Нет данных за период.</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>Медленные позиции (нетто, за период)</h2>
+    {% if ranking.slow %}
+    <ul class="rank-list">
+      {% for r in ranking.slow %}
+      <li><span>{{ r.name }} <span class="muted">({{ r.sku }})</span></span><span class="rank-qty">{{ r.net_sold }}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Нет данных за период.</p>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>Сравнение ФФ по скорости продаж (нетто, за период)</h2>
+  {% if ff_comparison %}
+  <table>
+    <thead><tr><th>ФФ</th><th>Продано</th><th>Отменено</th><th>% отмен</th><th>Нетто</th></tr></thead>
+    <tbody>
+      {% for r in ff_comparison %}
+      <tr>
+        <td>
+          {% if r.ff_id %}<span class="ff-tag ff-color-{{ r.ff_id % 6 }}">{{ r.ff_name }}</span>
+          {% else %}<span class="ff-tag ff-color-none">{{ r.ff_name }}</span>{% endif %}
+        </td>
+        <td>{{ r.sale_qty }}</td>
+        <td>{{ r.reversal_qty }}</td>
+        <td class="muted">{{ (r.cancel_rate * 100) | round(1) if r.cancel_rate is not none else '—' }}{% if r.cancel_rate is not none %}%{% endif %}</td>
+        <td class="{{ 'qty-negative' if r.net_sold < 0 else '' }}">{{ r.net_sold }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">Нет данных за период.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Темп продаж и сколько дней осталось</h2>
+  <p class="muted">
+    Темп считается по последним {{ velocity_window }} дн. (нетто-продажи ÷ {{ velocity_window }}).
+    «Дней осталось» = текущий остаток ÷ темп продаж в день; «нет данных» — если за окно продаж не было.
+  </p>
+  {% if velocity %}
+  <table>
+    <thead><tr><th>ФФ</th><th>Товар</th><th>Остаток сейчас</th><th>Продано за окно (нетто)</th><th>Темп/день</th><th>Дней осталось</th></tr></thead>
+    <tbody>
+      {% for v in velocity %}
+      <tr>
+        <td>
+          {% if v.ff_id %}<span class="ff-tag ff-color-{{ v.ff_id % 6 }}">{{ v.ff_name }}</span>
+          {% else %}<span class="ff-tag ff-color-none">{{ v.ff_name }}</span>{% endif %}
+        </td>
+        <td>{{ v.product_name }} <span class="muted">({{ v.sku }})</span></td>
+        <td class="{{ 'qty-negative' if v.stock < 0 else '' }}">{{ v.stock }}</td>
+        <td>{{ v.net_sold }}</td>
+        <td>{{ v.daily_rate | round(2) }}</td>
+        <td>
+          {% if v.days_left is none %}<span class="muted">нет данных</span>
+          {% else %}{{ v.days_left | round(1) }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">Нет данных.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Остатки на дату</h2>
+  <p class="muted">
+    Показывает срез остатков на конец выбранного дня (по МСК), исходя из журнала движений.
+    Точность назад во времени ограничена: если приход вносился не в день поступления, а задним числом одной
+    записью — снимок на более раннюю дату может не совпадать с тем, что было на складе фактически в тот день.
+  </p>
+  <form class="inline" method="get" action="/">
+    <p class="muted">Снимок остатков «на дату» смотрите на главной странице «Остатки» — там же, где обычный дашборд (в разработке: отдельный выбор даты появится там же).</p>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Журнал движений за период</h2>
+  <p><a href="/analytics/export.csv?date_from={{ date_from }}&date_to={{ date_to }}{% if ff_id %}&ff_id={{ ff_id }}{% endif %}{% if product_id %}&product_id={{ product_id }}{% endif %}" class="btn btn-secondary">Экспорт в CSV</a></p>
+  {% if journal %}
+  <table>
+    <thead><tr><th>Дата</th><th>Товар</th><th>Склад</th><th>ФФ</th><th>Тип</th><th>Кол-во</th><th>Источник</th><th>Комментарий</th></tr></thead>
+    <tbody>
+      {% for m in journal %}
+      <tr>
+        <td>{{ m.created_at | dtfmt }}</td>
+        <td>{{ m.product_name or '—' }} <span class="muted">({{ m.product_sku or '—' }})</span></td>
+        <td>{{ m.warehouse_name or '—' }}</td>
+        <td>
+          {% if m.ff_name %}<span class="ff-tag ff-color-{{ m.ff_id % 6 }}">{{ m.ff_name }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>{{ m.movement_type }}</td>
+        <td class="{{ 'qty-negative' if m.delta < 0 else '' }}">{{ '+' if m.delta > 0 else '' }}{{ m.delta }}</td>
+        <td class="muted">{{ 'WB' if m.source == 'wb_sync' else (m.created_by_username or 'вручную') }}</td>
+        <td class="muted">{{ m.comment or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Показаны первые 300 записей за период. Для полной выгрузки используйте экспорт в CSV.</p>
+  {% else %}<p class="muted">За выбранный период и фильтры движений не найдено.</p>{% endif %}
+</div>
+{% endblock %}
