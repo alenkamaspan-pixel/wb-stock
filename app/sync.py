@@ -58,6 +58,21 @@ def get_stock_table(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def get_product_totals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Итого по каждому товару (артикулу) сразу по ВСЕМ складам и ФФ —
+    для верхнего сводного блока дашборда."""
+    return conn.execute(
+        """
+        SELECT p.id AS product_id, p.sku, p.name,
+               COALESCE(SUM(m.delta), 0) AS quantity
+        FROM stock_movements m
+        JOIN products p ON p.id = m.product_id
+        GROUP BY p.id
+        ORDER BY p.name
+        """
+    ).fetchall()
+
+
 def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
     """Остатки, сгруппированные по фулфилмент-центрам — для дашборда.
 
@@ -72,8 +87,10 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
       {
         "ff_id": int | None,
         "ff_name": str,
-        "rows": [sqlite3.Row, ...],       # разбивка по складам внутри ФФ
+        "ff_total": int,                  # сумма по ВСЕМ товарам сразу в рамках ФФ
+        "rows": [sqlite3.Row, ...],        # детальная разбивка: товар × склад
         "totals": [{"product_id", "sku", "name", "quantity"}, ...],  # итого по товару
+        "warehouse_totals": [{"warehouse_id", "warehouse_name", "quantity"}, ...],  # итого по складу (все товары)
       }
     """
     flat = conn.execute(
@@ -101,10 +118,12 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
                 "ff_name": row["ff_name"] or "Без ФФ (внутренние или ещё не привязанные склады)",
                 "rows": [],
                 "_totals_map": {},
+                "_warehouse_totals_map": {},
             }
             order.append(key)
         group = groups[key]
         group["rows"].append(row)
+
         totals_map = group["_totals_map"]
         if row["product_id"] not in totals_map:
             totals_map[row["product_id"]] = {
@@ -113,11 +132,24 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
             }
         totals_map[row["product_id"]]["quantity"] += row["quantity"]
 
+        wh_totals = group["_warehouse_totals_map"]
+        if row["warehouse_id"] not in wh_totals:
+            wh_totals[row["warehouse_id"]] = {
+                "warehouse_id": row["warehouse_id"], "warehouse_name": row["warehouse_name"],
+                "quantity": 0,
+            }
+        wh_totals[row["warehouse_id"]]["quantity"] += row["quantity"]
+
     result = []
     for key in order:
         group = groups[key]
         group["totals"] = sorted(group["_totals_map"].values(), key=lambda t: t["name"])
+        group["warehouse_totals"] = sorted(
+            group["_warehouse_totals_map"].values(), key=lambda w: w["warehouse_name"]
+        )
+        group["ff_total"] = sum(t["quantity"] for t in group["totals"])
         del group["_totals_map"]
+        del group["_warehouse_totals_map"]
         result.append(group)
     return result
 

@@ -10,7 +10,7 @@ from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL
 from app.database import get_conn, init_db, now_iso
 from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
-from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_current_stock
+from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock
 from app.wb_client import WBClient, WBApiError
 
 app = Flask(__name__)
@@ -71,8 +71,11 @@ def logout():
 @login_required
 def dashboard():
     ff_groups = get_stock_by_ff(g.db)
+    product_totals = get_product_totals(g.db)
     last_run = g.db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
-    return render_template("dashboard.html", ff_groups=ff_groups, last_run=last_run)
+    return render_template(
+        "dashboard.html", ff_groups=ff_groups, product_totals=product_totals, last_run=last_run,
+    )
 
 
 @app.route("/sync/run-now", methods=["POST"])
@@ -615,6 +618,33 @@ def user_new():
     )
     g.db.commit()
     return redirect(url_for("users_page", ok="Пользователь добавлен"))
+
+
+@app.route("/admin/reset-stock", methods=["POST"])
+@login_required
+def admin_reset_stock():
+    """Полный сброс остатков: удаляет ВСЕ движения (и внесённые вручную, и
+    созданные синхронизацией с WB) и всю историю заказов WB — чтобы начать
+    учёт заново с чистого листа. Товары, склады, ФФ и пользователи не
+    затрагиваются. Доступно только администратору, требует явного
+    подтверждения — действие необратимо."""
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("dashboard", error="Сбросить остатки может только администратор"))
+    confirm_text = request.form.get("confirm_text", "").strip()
+    if confirm_text != "СБРОСИТЬ":
+        return redirect(url_for(
+            "users_page",
+            error="Для подтверждения нужно ввести слово СБРОСИТЬ (заглавными буквами) — ничего не удалено",
+        ))
+    g.db.execute("DELETE FROM stock_movements")
+    g.db.execute("DELETE FROM wb_orders")
+    g.db.commit()
+    return redirect(url_for(
+        "users_page",
+        ok="Готово: все остатки, движения и история заказов WB обнулены. "
+           "Товары, склады, ФФ и пользователи не тронуты — можно вносить приход заново.",
+    ))
 
 
 # ------------------------------------------------------------------- запуск
