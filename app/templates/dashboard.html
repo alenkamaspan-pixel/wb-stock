@@ -20,38 +20,52 @@
   </form>
 </div>
 
+{% if product_totals %}
+<div class="card">
+  <h2>Итого по товарам (по всем ФФ и складам сразу)</h2>
+  <div class="stat-grid">
+    {% for t in product_totals %}
+    <div class="stat-tile {{ 'negative' if t.quantity < 0 else ('zero' if t.quantity == 0 else 'positive') }}">
+      <div class="stat-label">{{ t.name }} <span class="stat-sku">({{ t.sku }})</span></div>
+      <div class="stat-value">{{ t.quantity }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if ff_groups %}
   {% for group in ff_groups %}
   <div class="card">
-    <h2>{{ group.ff_name }}</h2>
+    <div class="ff-header">
+      <h2>{{ group.ff_name }}</h2>
+      <div class="ff-total-badge {{ 'negative' if group.ff_total < 0 else '' }}">{{ group.ff_total }} шт. всего</div>
+    </div>
 
-    {% if group.totals %}
-    <table>
-      <thead><tr><th>Товар</th><th>Итого по ФФ</th></tr></thead>
-      <tbody>
-        {% for t in group.totals %}
-        <tr>
-          <td>{{ t.name }} <span class="muted">({{ t.sku }})</span></td>
-          <td class="{{ 'qty-negative' if t.quantity < 0 else ('qty-zero' if t.quantity == 0 else '') }}">{{ t.quantity }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
+    <div class="stat-grid">
+      {% for wt in group.warehouse_totals %}
+      <div class="stat-tile {{ 'negative' if wt.quantity < 0 else ('zero' if wt.quantity == 0 else 'positive') }}">
+        <div class="stat-label">{{ wt.warehouse_name }}</div>
+        <div class="stat-value">{{ wt.quantity }}</div>
+      </div>
+      {% endfor %}
+    </div>
 
-    <p class="muted" style="margin-top:16px; margin-bottom:8px;">Разбивка по складам внутри «{{ group.ff_name }}»:</p>
-    <table>
-      <thead><tr><th>Товар</th><th>Склад</th><th>Остаток</th></tr></thead>
-      <tbody>
-        {% for row in group.rows %}
-        <tr>
-          <td>{{ row.product_name }}</td>
-          <td>{{ row.warehouse_name }}</td>
-          <td class="{{ 'qty-negative' if row.quantity < 0 else ('qty-zero' if row.quantity == 0 else '') }}">{{ row.quantity }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <details class="detail-table" style="margin-top:16px;">
+      <summary>Подробно по товарам внутри «{{ group.ff_name }}»</summary>
+      <table>
+        <thead><tr><th>Товар</th><th>Склад</th><th>Остаток</th></tr></thead>
+        <tbody>
+          {% for row in group.rows %}
+          <tr>
+            <td>{{ row.product_name }} <span class="muted">({{ row.sku }})</span></td>
+            <td>{{ row.warehouse_name }}</td>
+            <td class="{{ 'qty-negative' if row.quantity < 0 else ('qty-zero' if row.quantity == 0 else '') }}">{{ row.quantity }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
   </div>
   {% endfor %}
 {% else %}
