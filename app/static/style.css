@@ -1,92 +1,138 @@
+/* ============================================================
+   WB Stock — тема "old money": приглушённая палитра, засечковые
+   шрифты, тонкие линии вместо теней. Один файл на всё приложение —
+   структура классов не менялась, чтобы не трогать шаблоны.
+   ============================================================ */
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --border: #e3e6ea;
-  --text: #1c2126;
-  --muted: #6b7280;
-  --accent: #6b4ee6;
-  --accent-dark: #5638c4;
-  --danger: #d64545;
-  --ok: #2f9e5e;
+  --bg: #f4f0e6;
+  --card: #fbf9f3;
+  --border: #ddd2b8;
+  --border-soft: #e8e0cd;
+  --text: #2b2620;
+  --muted: #7d7362;
+  --accent: #2f4a3d;       /* глубокий бутылочно-зелёный */
+  --accent-dark: #1f342b;
+  --gold: #a2823f;         /* приглушённая латунь — точечные акценты */
+  --danger: #7c3b34;       /* приглушённый бордовый вместо кричащего красного */
+  --danger-bg: #f2e5e1;
+  --danger-border: #e3cec6;
+  --ok: #3e5b41;
+  --ok-bg: #e7ede4;
+  --ok-border: #d3ddce;
+  --running-bg: #ece7da;
+
+  /* приглушённые метки ФФ — по кругу, стабильно по ff_id % 6 */
+  --ff0: #7c8c66; --ff0-bg: #eaeee0;   /* шалфей */
+  --ff1: #a97e78; --ff1-bg: #f2e6e2;   /* пыльная роза */
+  --ff2: #5f7f8c; --ff2-bg: #e3ecee;   /* пудрово-голубой */
+  --ff3: #a68a4a; --ff3-bg: #f1e8d4;   /* песочный */
+  --ff4: #7d6b8c; --ff4-bg: #eae3ee;   /* мальва */
+  --ff5: #6c7583; --ff5-bg: #e5e7ea;   /* сланцевый */
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "Lora", Georgia, "Times New Roman", serif;
+  font-size: 15px;
   background: var(--bg);
   color: var(--text);
+  line-height: 1.5;
+}
+h1, h2, .brand {
+  font-family: "Playfair Display", Georgia, serif;
+  font-weight: 600;
+  letter-spacing: 0.2px;
 }
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 24px;
+  padding: 16px 28px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
 }
-.topbar .brand { font-weight: 700; font-size: 17px; }
+.topbar .brand { font-weight: 700; font-size: 19px; color: var(--accent); }
 .topbar nav a {
-  margin-left: 18px;
+  margin-left: 20px;
   color: var(--text);
   text-decoration: none;
   font-size: 14px;
+  letter-spacing: 0.2px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid transparent;
 }
-.topbar nav a:hover { color: var(--accent); }
-.container { padding: 24px; max-width: 1100px; margin: 0 auto; }
+.topbar nav a:hover { color: var(--accent); border-bottom-color: var(--gold); }
+.container { padding: 28px; max-width: 1160px; margin: 0 auto; }
 .card {
   background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px 20px;
-  margin-bottom: 18px;
+  border: 1px solid var(--border-soft);
+  border-top: 2px solid var(--accent);
+  border-radius: 3px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
 }
-h1 { font-size: 22px; margin: 0 0 16px; }
-h2 { font-size: 16px; margin: 0 0 12px; }
+h1 { font-size: 24px; margin: 0 0 18px; color: var(--accent); }
+h2 { font-size: 17px; margin: 0 0 14px; color: var(--text); }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-tr:hover td { background: #fafafa; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border-soft); }
+th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  border-bottom: 1px solid var(--border);
+}
+tr:hover td { background: #f7f3e9; }
 .qty-negative { color: var(--danger); font-weight: 600; }
 .qty-zero { color: var(--muted); }
-form.inline { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 4px; }
-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+form.inline { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 4px; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.2px; }
 input, select {
-  padding: 7px 9px;
+  padding: 7px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 3px;
   font-size: 14px;
+  font-family: inherit;
+  background: #fffdf9;
+  color: var(--text);
 }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
 button, .btn {
   background: var(--accent);
-  color: white;
-  border: none;
-  padding: 8px 14px;
-  border-radius: 6px;
+  color: #f6f2e6;
+  border: 1px solid var(--accent);
+  padding: 8px 16px;
+  border-radius: 3px;
   font-size: 14px;
+  font-family: inherit;
   cursor: pointer;
   text-decoration: none;
   display: inline-block;
+  letter-spacing: 0.3px;
 }
-button:hover, .btn:hover { background: var(--accent-dark); }
-.btn-secondary { background: #eceef1; color: var(--text); }
-.btn-secondary:hover { background: #dfe2e6; }
+button:hover, .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+.btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--border-soft); border-color: var(--border); }
 .pill {
   display: inline-block;
-  padding: 2px 9px;
+  padding: 2px 10px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.3px;
+  border: 1px solid transparent;
 }
-.pill.ok { background: #e4f7ec; color: var(--ok); }
-.pill.error { background: #fbe6e6; color: var(--danger); }
-.pill.running { background: #f0edfc; color: var(--accent); }
-.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
-.flash.error { background: #fbe6e6; color: var(--danger); }
-.flash.ok { background: #e4f7ec; color: var(--ok); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
+.pill.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
+.pill.running { background: var(--running-bg); color: var(--accent); }
+.flash { padding: 11px 16px; border-radius: 3px; margin-bottom: 16px; font-size: 14px; border: 1px solid transparent; }
+.flash.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
+.flash.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 .login-wrap {
   display: flex; align-items: center; justify-content: center; height: 100vh;
 }
-.login-card { width: 320px; }
+.login-card { width: 340px; }
 .muted { color: var(--muted); font-size: 13px; }
 
 /* ------------------------------------------------------ карточки-плитки
@@ -100,14 +146,14 @@ button:hover, .btn:hover { background: var(--accent-dark); }
 .stat-tile {
   flex: 1 1 170px;
   min-width: 150px;
-  background: #f6f7f9;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: #f8f5ec;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
   padding: 14px 16px;
 }
-.stat-tile.positive { background: #eef7f1; border-color: #d3ecdc; }
-.stat-tile.negative { background: #fbecec; border-color: #f3caca; }
-.stat-tile.zero { background: #f0f1f3; }
+.stat-tile.positive { background: var(--ok-bg); border-color: var(--ok-border); }
+.stat-tile.negative { background: var(--danger-bg); border-color: var(--danger-border); }
+.stat-tile.zero { background: #efece2; }
 .stat-label {
   font-size: 13px;
   color: var(--muted);
@@ -115,7 +161,7 @@ button:hover, .btn:hover { background: var(--accent-dark); }
   line-height: 1.3;
 }
 .stat-sku { font-size: 12px; color: var(--muted); }
-.stat-value { font-size: 26px; font-weight: 700; color: var(--text); }
+.stat-value { font-family: "Playfair Display", Georgia, serif; font-size: 27px; font-weight: 700; color: var(--text); }
 .stat-tile.negative .stat-value { color: var(--danger); }
 .stat-tile.zero .stat-value { color: var(--muted); }
 
@@ -129,9 +175,11 @@ button:hover, .btn:hover { background: var(--accent-dark); }
 }
 .ff-header h2 { margin: 0; }
 .ff-total-badge {
+  font-family: "Playfair Display", Georgia, serif;
   font-size: 22px;
   font-weight: 700;
   white-space: nowrap;
+  color: var(--accent);
 }
 .ff-total-badge.negative { color: var(--danger); }
 
@@ -143,3 +191,57 @@ details.detail-table summary {
 }
 details.detail-table summary:hover { color: var(--accent); }
 details.detail-table table { margin-top: 10px; }
+
+/* ------------------------------------------------------ метки ФФ
+   Стабильный приглушённый цвет по ff_id % 6 — узнаётся с одного взгляда
+   на дашборде, складах и в аналитике, без необходимости читать название. */
+.ff-tag {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+.ff-tag.ff-color-0 { background: var(--ff0-bg); color: var(--ff0); }
+.ff-tag.ff-color-1 { background: var(--ff1-bg); color: var(--ff1); }
+.ff-tag.ff-color-2 { background: var(--ff2-bg); color: var(--ff2); }
+.ff-tag.ff-color-3 { background: var(--ff3-bg); color: var(--ff3); }
+.ff-tag.ff-color-4 { background: var(--ff4-bg); color: var(--ff4); }
+.ff-tag.ff-color-5 { background: var(--ff5-bg); color: var(--ff5); }
+.ff-tag.ff-color-none { background: #eee9db; color: var(--muted); }
+
+.card.ff-card { border-top-width: 3px; }
+.card.ff-color-0 { border-top-color: var(--ff0); }
+.card.ff-color-1 { border-top-color: var(--ff1); }
+.card.ff-color-2 { border-top-color: var(--ff2); }
+.card.ff-color-3 { border-top-color: var(--ff3); }
+.card.ff-color-4 { border-top-color: var(--ff4); }
+.card.ff-color-5 { border-top-color: var(--ff5); }
+.card.ff-color-none { border-top-color: var(--muted); }
+
+/* ------------------------------------------------------ аналитика:
+   фильтры, KPI-плитки, рейтинги, журнал */
+.filter-bar {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+.filter-bar .btn, .filter-bar button { margin-bottom: 1px; }
+.rank-list { list-style: none; margin: 0; padding: 0; }
+.rank-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 14px;
+}
+.rank-list li:last-child { border-bottom: none; }
+.rank-list .rank-qty { font-weight: 700; color: var(--accent); }
+.two-col { display: flex; gap: 20px; flex-wrap: wrap; }
+.two-col > div { flex: 1 1 320px; }
+.sparkbar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.sparkbar-track { flex: 1; height: 8px; background: var(--border-soft); border-radius: 4px; overflow: hidden; }
+.sparkbar-fill { height: 100%; background: var(--accent); }
