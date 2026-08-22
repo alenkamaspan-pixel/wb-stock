@@ -1,47 +1,52 @@
 /* ============================================================
-   WB Stock — тема "old money": приглушённая палитра, засечковые
-   шрифты, тонкие линии вместо теней. Один файл на всё приложение —
-   структура классов не менялась, чтобы не трогать шаблоны.
+   WB Stock — тема в стиле маркетплейс-инфографики: лавандово-
+   фиолетовая палитра, жирный геометричный шрифт для заголовков,
+   мягкие скругления и лёгкие тени вместо тонких линий.
+   Структура классов не менялась — шаблоны трогать не нужно.
    ============================================================ */
 :root {
-  --bg: #f4f0e6;
-  --card: #fbf9f3;
-  --border: #ddd2b8;
-  --border-soft: #e8e0cd;
-  --text: #2b2620;
-  --muted: #7d7362;
-  --accent: #2f4a3d;       /* глубокий бутылочно-зелёный */
-  --accent-dark: #1f342b;
-  --gold: #a2823f;         /* приглушённая латунь — точечные акценты */
-  --danger: #7c3b34;       /* приглушённый бордовый вместо кричащего красного */
-  --danger-bg: #f2e5e1;
-  --danger-border: #e3cec6;
-  --ok: #3e5b41;
-  --ok-bg: #e7ede4;
-  --ok-border: #d3ddce;
-  --running-bg: #ece7da;
+  --bg: #f2f0fa;
+  --card: #ffffff;
+  --border: #e5e0f7;
+  --border-soft: #ece8fa;
+  --text: #201b36;
+  --muted: #8b84a8;
+  --accent: #7c6fd9;        /* лавандовый — основной акцент */
+  --accent-dark: #5f52b8;
+  --accent-soft: #eeebfc;
+  --accent-2: #4a3d82;      /* глубокий тёмно-фиолетовый — для контрастных блоков */
+  --gold: #c9a94a;
+  --danger: #d1476b;
+  --danger-bg: #fbe7ec;
+  --danger-border: #f5c9d3;
+  --ok: #2f9e6f;
+  --ok-bg: #e2f6ec;
+  --ok-border: #c5ead6;
+  --running-bg: #efe9fc;
+  --shadow: 0 4px 18px rgba(90, 70, 160, 0.08);
+  --shadow-sm: 0 2px 8px rgba(90, 70, 160, 0.06);
 
-  /* приглушённые метки ФФ — по кругу, стабильно по ff_id % 6 */
-  --ff0: #7c8c66; --ff0-bg: #eaeee0;   /* шалфей */
-  --ff1: #a97e78; --ff1-bg: #f2e6e2;   /* пыльная роза */
-  --ff2: #5f7f8c; --ff2-bg: #e3ecee;   /* пудрово-голубой */
-  --ff3: #a68a4a; --ff3-bg: #f1e8d4;   /* песочный */
-  --ff4: #7d6b8c; --ff4-bg: #eae3ee;   /* мальва */
-  --ff5: #6c7583; --ff5-bg: #e5e7ea;   /* сланцевый */
+  /* метки ФФ — насыщенные пастельные цвета по кругу, ff_id % 6 */
+  --ff0: #6f5fd6; --ff0-bg: #ece7fb;   /* лавандовый (основной) */
+  --ff1: #d6528f; --ff1-bg: #fbe6f0;   /* розовый */
+  --ff2: #2f8fd0; --ff2-bg: #e2f0fb;   /* голубой */
+  --ff3: #2fa88a; --ff3-bg: #e1f5ee;   /* мятный */
+  --ff4: #e08a3c; --ff4-bg: #fcedde;   /* персиковый */
+  --ff5: #c9a02f; --ff5-bg: #faf3dd;   /* песочно-жёлтый */
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: "Lora", Georgia, "Times New Roman", serif;
+  font-family: "Manrope", "Segoe UI", Arial, sans-serif;
   font-size: 15px;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
 }
 h1, h2, .brand {
-  font-family: "Playfair Display", Georgia, serif;
-  font-weight: 600;
-  letter-spacing: 0.2px;
+  font-family: "Unbounded", "Manrope", sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.2px;
 }
 .topbar {
   display: flex;
@@ -51,82 +56,92 @@ h1, h2, .brand {
   background: var(--card);
   border-bottom: 1px solid var(--border);
 }
-.topbar .brand { font-weight: 700; font-size: 19px; color: var(--accent); }
+.topbar .brand {
+  font-weight: 800;
+  font-size: 19px;
+  background: linear-gradient(120deg, var(--accent-2), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 .topbar nav a {
   margin-left: 20px;
   color: var(--text);
   text-decoration: none;
   font-size: 14px;
-  letter-spacing: 0.2px;
-  padding-bottom: 3px;
-  border-bottom: 1px solid transparent;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  padding: 6px 12px;
+  border-radius: 999px;
 }
-.topbar nav a:hover { color: var(--accent); border-bottom-color: var(--gold); }
+.topbar nav a:hover { color: var(--accent-dark); background: var(--accent-soft); }
 .container { padding: 28px; max-width: 1160px; margin: 0 auto; }
 .card {
   background: var(--card);
   border: 1px solid var(--border-soft);
-  border-top: 2px solid var(--accent);
-  border-radius: 3px;
-  padding: 20px 24px;
+  border-radius: 18px;
+  padding: 22px 26px;
   margin-bottom: 20px;
+  box-shadow: var(--shadow);
 }
-h1 { font-size: 24px; margin: 0 0 18px; color: var(--accent); }
+h1 { font-size: 26px; margin: 0 0 18px; color: var(--text); }
 h2 { font-size: 17px; margin: 0 0 14px; color: var(--text); }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border-soft); }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); }
 th {
   color: var(--muted);
-  font-weight: 600;
+  font-weight: 700;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
   border-bottom: 1px solid var(--border);
 }
-tr:hover td { background: #f7f3e9; }
-.qty-negative { color: var(--danger); font-weight: 600; }
+tr:hover td { background: var(--accent-soft); }
+.qty-negative { color: var(--danger); font-weight: 700; }
 .qty-zero { color: var(--muted); }
 form.inline { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 4px; }
-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.2px; }
+label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 5px; letter-spacing: 0.2px; }
 input, select {
-  padding: 7px 10px;
+  padding: 9px 12px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 10px;
   font-size: 14px;
   font-family: inherit;
-  background: #fffdf9;
+  background: #fbfaff;
   color: var(--text);
 }
-input:focus, select:focus { outline: none; border-color: var(--accent); }
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 button, .btn {
   background: var(--accent);
-  color: #f6f2e6;
+  color: #ffffff;
   border: 1px solid var(--accent);
-  padding: 8px 16px;
-  border-radius: 3px;
+  padding: 10px 20px;
+  border-radius: 999px;
   font-size: 14px;
+  font-weight: 700;
   font-family: inherit;
   cursor: pointer;
   text-decoration: none;
   display: inline-block;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
+  box-shadow: var(--shadow-sm);
 }
 button:hover, .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
-.btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
-.btn-secondary:hover { background: var(--border-soft); border-color: var(--border); }
+.btn-secondary { background: #ffffff; color: var(--text); border: 1px solid var(--border); box-shadow: none; }
+.btn-secondary:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
 .pill {
   display: inline-block;
-  padding: 2px 10px;
+  padding: 3px 12px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.3px;
   border: 1px solid transparent;
 }
 .pill.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 .pill.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
 .pill.running { background: var(--running-bg); color: var(--accent); }
-.flash { padding: 11px 16px; border-radius: 3px; margin-bottom: 16px; font-size: 14px; border: 1px solid transparent; }
+.flash { padding: 12px 18px; border-radius: 14px; margin-bottom: 16px; font-size: 14px; font-weight: 600; border: 1px solid transparent; }
 .flash.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
 .flash.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 .login-wrap {
@@ -146,22 +161,23 @@ button:hover, .btn:hover { background: var(--accent-dark); border-color: var(--a
 .stat-tile {
   flex: 1 1 170px;
   min-width: 150px;
-  background: #f8f5ec;
+  background: var(--accent-soft);
   border: 1px solid var(--border-soft);
-  border-radius: 3px;
-  padding: 14px 16px;
+  border-radius: 14px;
+  padding: 15px 18px;
 }
 .stat-tile.positive { background: var(--ok-bg); border-color: var(--ok-border); }
 .stat-tile.negative { background: var(--danger-bg); border-color: var(--danger-border); }
-.stat-tile.zero { background: #efece2; }
+.stat-tile.zero { background: #f1eef9; }
 .stat-label {
   font-size: 13px;
+  font-weight: 600;
   color: var(--muted);
   margin-bottom: 6px;
   line-height: 1.3;
 }
-.stat-sku { font-size: 12px; color: var(--muted); }
-.stat-value { font-family: "Playfair Display", Georgia, serif; font-size: 27px; font-weight: 700; color: var(--text); }
+.stat-sku { font-size: 12px; color: var(--muted); font-weight: 400; }
+.stat-value { font-family: "Unbounded", sans-serif; font-size: 26px; font-weight: 700; color: var(--accent-2); }
 .stat-tile.negative .stat-value { color: var(--danger); }
 .stat-tile.zero .stat-value { color: var(--muted); }
 
@@ -175,17 +191,18 @@ button:hover, .btn:hover { background: var(--accent-dark); border-color: var(--a
 }
 .ff-header h2 { margin: 0; }
 .ff-total-badge {
-  font-family: "Playfair Display", Georgia, serif;
-  font-size: 22px;
+  font-family: "Unbounded", sans-serif;
+  font-size: 20px;
   font-weight: 700;
   white-space: nowrap;
-  color: var(--accent);
+  color: var(--accent-2);
 }
 .ff-total-badge.negative { color: var(--danger); }
 
 details.detail-table summary {
   cursor: pointer;
   color: var(--muted);
+  font-weight: 600;
   font-size: 13px;
   user-select: none;
 }
@@ -193,14 +210,14 @@ details.detail-table summary:hover { color: var(--accent); }
 details.detail-table table { margin-top: 10px; }
 
 /* ------------------------------------------------------ метки ФФ
-   Стабильный приглушённый цвет по ff_id % 6 — узнаётся с одного взгляда
+   Насыщенный пастельный цвет по ff_id % 6 — узнаётся с одного взгляда
    на дашборде, складах и в аналитике, без необходимости читать название. */
 .ff-tag {
   display: inline-block;
-  padding: 1px 9px;
+  padding: 3px 12px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.2px;
   white-space: nowrap;
 }
@@ -210,16 +227,37 @@ details.detail-table table { margin-top: 10px; }
 .ff-tag.ff-color-3 { background: var(--ff3-bg); color: var(--ff3); }
 .ff-tag.ff-color-4 { background: var(--ff4-bg); color: var(--ff4); }
 .ff-tag.ff-color-5 { background: var(--ff5-bg); color: var(--ff5); }
-.ff-tag.ff-color-none { background: #eee9db; color: var(--muted); }
+.ff-tag.ff-color-none { background: #ece8f7; color: var(--muted); }
 
-.card.ff-card { border-top-width: 3px; }
-.card.ff-color-0 { border-top-color: var(--ff0); }
-.card.ff-color-1 { border-top-color: var(--ff1); }
-.card.ff-color-2 { border-top-color: var(--ff2); }
-.card.ff-color-3 { border-top-color: var(--ff3); }
-.card.ff-color-4 { border-top-color: var(--ff4); }
-.card.ff-color-5 { border-top-color: var(--ff5); }
-.card.ff-color-none { border-top-color: var(--muted); }
+/* карточка ФФ на дашборде — тёмный градиентный "хиро"-блок, как контрастные
+   плашки в примере инфографики, с приглушённым верхним акцентом по цвету ФФ */
+.card.ff-card {
+  background: linear-gradient(150deg, var(--accent-2) 0%, #342a63 100%);
+  border: none;
+  box-shadow: 0 8px 24px rgba(74, 61, 130, 0.25);
+}
+.card.ff-card h2, .card.ff-card .ff-total-badge { color: #ffffff; }
+.card.ff-card .ff-total-badge.negative { color: #ffb3c6; }
+.card.ff-card .stat-tile { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.14); }
+.card.ff-card .stat-tile.positive { background: rgba(64, 200, 140, 0.16); border-color: rgba(64, 200, 140, 0.3); }
+.card.ff-card .stat-tile.negative { background: rgba(230, 90, 120, 0.18); border-color: rgba(230, 90, 120, 0.32); }
+.card.ff-card .stat-label { color: rgba(255,255,255,0.65); }
+.card.ff-card .stat-value { color: #ffffff; }
+.card.ff-card .stat-tile.negative .stat-value { color: #ffc2d1; }
+.card.ff-card details.detail-table summary { color: rgba(255,255,255,0.65); }
+.card.ff-card details.detail-table summary:hover { color: #ffffff; }
+.card.ff-card table th { color: rgba(255,255,255,0.55); border-bottom-color: rgba(255,255,255,0.16); }
+.card.ff-card table td { color: rgba(255,255,255,0.9); border-bottom-color: rgba(255,255,255,0.1); }
+.card.ff-card tr:hover td { background: rgba(255,255,255,0.06); }
+.card.ff-card .ff-tag { box-shadow: 0 0 0 1px rgba(255,255,255,0.5) inset; }
+
+.card.ff-color-0 { border-top: 4px solid var(--ff0); }
+.card.ff-color-1 { border-top: 4px solid var(--ff1); }
+.card.ff-color-2 { border-top: 4px solid var(--ff2); }
+.card.ff-color-3 { border-top: 4px solid var(--ff3); }
+.card.ff-color-4 { border-top: 4px solid var(--ff4); }
+.card.ff-color-5 { border-top: 4px solid var(--ff5); }
+.card.ff-color-none { border-top: 4px solid rgba(255,255,255,0.25); }
 
 /* ------------------------------------------------------ аналитика:
    фильтры, KPI-плитки, рейтинги, журнал */
@@ -234,14 +272,14 @@ details.detail-table table { margin-top: 10px; }
 .rank-list li {
   display: flex;
   justify-content: space-between;
-  padding: 7px 0;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
   font-size: 14px;
 }
 .rank-list li:last-child { border-bottom: none; }
-.rank-list .rank-qty { font-weight: 700; color: var(--accent); }
+.rank-list .rank-qty { font-weight: 700; color: var(--accent-2); }
 .two-col { display: flex; gap: 20px; flex-wrap: wrap; }
 .two-col > div { flex: 1 1 320px; }
 .sparkbar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.sparkbar-track { flex: 1; height: 8px; background: var(--border-soft); border-radius: 4px; overflow: hidden; }
-.sparkbar-fill { height: 100%; background: var(--accent); }
+.sparkbar-track { flex: 1; height: 9px; background: var(--accent-soft); border-radius: 999px; overflow: hidden; }
+.sparkbar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
