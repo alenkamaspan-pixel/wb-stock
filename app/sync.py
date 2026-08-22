@@ -73,14 +73,20 @@ def get_product_totals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
-    """Остатки, сгруппированные по фулфилмент-центрам — для дашборда.
+def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[dict]:
+    """Остатки, сгруппированные по фулфилмент-центрам — для дашборда и для
+    раздела «Остатки на дату» в аналитике.
 
     Один ФФ (физический склад-партнёр) может обслуживать сразу несколько
     складов WB (регионов). Списание по заказу по-прежнему идёт с конкретного
     склада WB (это не меняется), а здесь мы отдельно считаем сумму по всем
     складам, привязанным к одному ФФ — это только витрина, без своей
     бухгалтерии движений.
+
+    as_of: дата в формате YYYY-MM-DD (московское время, конец дня) — если
+    указана, считает остаток НЕ на сейчас, а на конец этого дня (сумма всех
+    движений с датой не позже этого момента). По умолчанию (None) — текущий
+    остаток на сейчас, как и раньше.
 
     Возвращает список групп в порядке: сначала привязанные ФФ (по алфавиту),
     в конце — склады без привязки к ФФ, единой группой. Каждая группа:
@@ -93,8 +99,15 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
         "warehouse_totals": [{"warehouse_id", "warehouse_name", "quantity"}, ...],  # итого по складу (все товары)
       }
     """
+    where_clause = ""
+    params: dict = {}
+    if as_of:
+        # конец дня по Москве -> в UTC для сравнения со строками created_at
+        where_clause = "WHERE m.created_at <= datetime(:as_of || ' 23:59:59', '-3 hours')"
+        params["as_of"] = as_of
+
     flat = conn.execute(
-        """
+        f"""
         SELECT p.id AS product_id, p.sku, p.name AS product_name,
                w.id AS warehouse_id, w.name AS warehouse_name,
                f.id AS ff_id, f.name AS ff_name,
@@ -103,9 +116,11 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
         JOIN products p ON p.id = m.product_id
         JOIN warehouses w ON w.id = m.warehouse_id
         LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
+        {where_clause}
         GROUP BY p.id, w.id
         ORDER BY (f.name IS NULL), f.name, p.name, w.name
-        """
+        """,
+        params,
     ).fetchall()
 
     groups: dict = {}
