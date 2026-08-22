@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}ФФ{% endblock %}
+{% block content %}
+<h1>Фулфилмент-центры (ФФ)</h1>
+
+{% if can_edit %}
+<div class="card">
+  <h2>Добавить ФФ</h2>
+  <form class="inline" method="post" action="/fulfillment-centers/new">
+    <div><label>Название</label><input type="text" name="name" required placeholder="например, Москва"></div>
+    <button type="submit">Добавить</button>
+  </form>
+  <p class="muted">
+    ФФ — это ваш фулфилмент-центр (физический склад-партнёр), который может обслуживать
+    сразу несколько складов WB в разных регионах. Привязать к нему конкретные склады можно
+    здесь через «Изменить», либо на странице «Склады» через редактирование самого склада.
+  </p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Список ФФ</h2>
+  {% if ff_list %}
+  <table>
+    <thead><tr><th>Название</th><th>Обслуживает складов</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for f in ff_list %}
+      {% set linked = warehouses | selectattr('fulfillment_center_id', 'equalto', f.id) | list %}
+      <tr>
+        <td>{{ f.name }}</td>
+        <td class="muted">
+          {{ linked | length }}{% if linked %} ({{ linked | map(attribute='name') | join(', ') }}){% endif %}
+        </td>
+        <td>{{ 'да' if f.is_active else 'нет' }}</td>
+        {% if can_edit %}
+        <td style="white-space:nowrap;">
+          <a href="/fulfillment-centers/{{ f.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+          <form method="post" action="/fulfillment-centers/{{ f.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить ФФ «{{ f.name }}»? Привязанные склады не удалятся — просто отвяжутся от него.');">
+            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Пока ни одного ФФ не добавлено.</p>
+  {% endif %}
+</div>
+{% endblock %}

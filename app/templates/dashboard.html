@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Остатки{% endblock %}
 {% block content %}
-<h1>Остатки по складам</h1>
+<h1>Остатки по ФФ и складам</h1>
 
 <div class="card">
   <h2>Синхронизация с WB</h2>
@@ -9,7 +9,7 @@
     <p>
       Последний запуск: {{ last_run.finished_at | dtfmt }}
       <span class="pill {{ 'ok' if last_run.status == 'success' else ('error' if last_run.status == 'error' else 'running') }}">{{ last_run.status }}</span>
-      — заказов получено: {{ last_run.orders_fetched }}, движений создано: {{ last_run.movements_created }}, остатков отправлено в WB: {{ last_run.stock_pushed }}
+      — заказов получено: {{ last_run.orders_fetched }}, движений создано: {{ last_run.movements_created }}
     </p>
     {% if last_run.message %}<p class="muted">{{ last_run.message }}</p>{% endif %}
   {% else %}
@@ -20,26 +20,43 @@
   </form>
 </div>
 
+{% if ff_groups %}
+  {% for group in ff_groups %}
+  <div class="card">
+    <h2>{{ group.ff_name }}</h2>
+
+    {% if group.totals %}
+    <table>
+      <thead><tr><th>Товар</th><th>Итого по ФФ</th></tr></thead>
+      <tbody>
+        {% for t in group.totals %}
+        <tr>
+          <td>{{ t.name }} <span class="muted">({{ t.sku }})</span></td>
+          <td class="{{ 'qty-negative' if t.quantity < 0 else ('qty-zero' if t.quantity == 0 else '') }}">{{ t.quantity }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <p class="muted" style="margin-top:16px; margin-bottom:8px;">Разбивка по складам внутри «{{ group.ff_name }}»:</p>
+    <table>
+      <thead><tr><th>Товар</th><th>Склад</th><th>Остаток</th></tr></thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr>
+          <td>{{ row.product_name }}</td>
+          <td>{{ row.warehouse_name }}</td>
+          <td class="{{ 'qty-negative' if row.quantity < 0 else ('qty-zero' if row.quantity == 0 else '') }}">{{ row.quantity }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+{% else %}
 <div class="card">
-  <h2>Текущие остатки</h2>
-  {% if rows %}
-  <table>
-    <thead>
-      <tr><th>Товар</th><th>Артикул</th><th>Склад</th><th>Остаток</th></tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-      <tr>
-        <td>{{ row.name }}</td>
-        <td class="muted">{{ row.sku }}</td>
-        <td>{{ row.warehouse_name }}</td>
-        <td class="{{ 'qty-negative' if row.quantity < 0 else ('qty-zero' if row.quantity == 0 else '') }}">{{ row.quantity }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
   <p class="muted">Пока нет ни одного движения по складам — добавьте приход товара на странице «Движения» или дождитесь первой синхронизации с WB.</p>
-  {% endif %}
 </div>
+{% endif %}
 {% endblock %}

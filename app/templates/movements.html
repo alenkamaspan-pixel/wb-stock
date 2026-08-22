@@ -71,7 +71,10 @@
   <h2>История движений</h2>
   <table>
     <thead>
-      <tr><th>Дата</th><th>Товар</th><th>Склад</th><th>Тип</th><th>Кол-во</th><th>Источник</th><th>Комментарий</th></tr>
+      <tr>
+        <th>Дата</th><th>Товар</th><th>Склад</th><th>Тип</th><th>Кол-во</th><th>Источник</th><th>Комментарий</th>
+        {% if can_edit %}<th></th>{% endif %}
+      </tr>
     </thead>
     <tbody>
       {% for m in movements %}
@@ -83,6 +86,24 @@
         <td class="{{ 'qty-negative' if m.delta < 0 else '' }}">{{ '+' if m.delta > 0 else '' }}{{ m.delta }}</td>
         <td class="muted">{{ 'WB' if m.source == 'wb_sync' else (m.created_by_username or 'вручную') }}</td>
         <td class="muted">{{ m.comment or '' }}</td>
+        {% if can_edit %}
+        <td style="white-space:nowrap;">
+          {% if m.source == 'manual' %}
+            {% if m.movement_type not in ['transfer_out', 'transfer_in'] %}
+            <a href="/movements/{{ m.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+            {% endif %}
+            {% if m.movement_type in ['transfer_out', 'transfer_in'] %}
+            {% set confirm_text = 'Удалить это перемещение полностью (обе стороны — списание и приход)?' %}
+            {% else %}
+            {% set confirm_text = 'Удалить это движение?' %}
+            {% endif %}
+            <form method="post" action="/movements/{{ m.id }}/delete" style="display:inline;"
+                  onsubmit="return confirm('{{ confirm_text }}');">
+              <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+            </form>
+          {% endif %}
+        </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

@@ -7,6 +7,14 @@
   <form class="inline" method="post" action="/warehouses/{{ warehouse.id }}/edit">
     <div><label>Название (внутреннее)</label><input type="text" name="name" value="{{ warehouse.name }}" required></div>
     <div><label>ID склада в WB</label><input type="number" name="wb_warehouse_id" value="{{ warehouse.wb_warehouse_id or '' }}"></div>
+    <div><label>ФФ</label>
+      <select name="fulfillment_center_id">
+        <option value="">— без ФФ —</option>
+        {% for f in ff_list %}
+        <option value="{{ f.id }}" {% if warehouse.fulfillment_center_id == f.id %}selected{% endif %}>{{ f.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <div>
       <label>Активен</label>
       <select name="is_active">

@@ -9,12 +9,20 @@
   <form class="inline" method="post" action="/warehouses/new">
     <div><label>Название (внутреннее)</label><input type="text" name="name" required></div>
     <div><label>ID склада в WB</label><input type="number" name="wb_warehouse_id"></div>
+    <div><label>ФФ (необязательно)</label>
+      <select name="fulfillment_center_id">
+        <option value="">— без ФФ —</option>
+        {% for f in ff_list %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}
+      </select>
+    </div>
     <button type="submit">Добавить</button>
   </form>
   <p class="muted">
     ID склада в WB нужен, чтобы приложение понимало, с какого именно вашего
     склада WB просит собрать заказ, и списывало остаток с правильного места.
     Если склад не привязан к WB (например, внутренний учётный) — оставьте поле пустым.
+    ФФ — это фулфилмент-центр, который физически обслуживает этот склад (см. страницу «ФФ»);
+    один ФФ может обслуживать сразу несколько таких складов.
   </p>
   <form method="post" action="/warehouses/import-from-wb" style="margin-top:10px;">
     <button type="submit" class="btn-secondary">Импортировать список складов из WB</button>
@@ -25,12 +33,13 @@
 <div class="card">
   <h2>Список складов</h2>
   <table>
-    <thead><tr><th>Название</th><th>ID в WB</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>Название</th><th>ID в WB</th><th>ФФ</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for w in warehouses %}
       <tr>
         <td>{{ w.name }}</td>
         <td class="muted">{{ w.wb_warehouse_id or '—' }}</td>
+        <td class="muted">{{ w.ff_name or '—' }}</td>
         <td>{{ 'да' if w.is_active else 'нет' }}</td>
         {% if can_edit %}
         <td style="white-space:nowrap;">

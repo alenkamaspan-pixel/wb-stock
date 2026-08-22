@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Изменить ФФ{% endblock %}
+{% block content %}
+<h1>Изменить ФФ: {{ ff.name }}</h1>
+
+<div class="card">
+  <form method="post" action="/fulfillment-centers/{{ ff.id }}/edit">
+    <div style="margin-bottom:14px; max-width:320px;">
+      <label>Название</label><input type="text" name="name" value="{{ ff.name }}" required>
+    </div>
+    <div style="margin-bottom:14px; max-width:320px;">
+      <label>Активен</label>
+      <select name="is_active">
+        <option value="1" {% if ff.is_active %}selected{% endif %}>Да</option>
+        <option value="0" {% if not ff.is_active %}selected{% endif %}>Нет</option>
+      </select>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label>Склады, которые обслуживает этот ФФ</label>
+      {% for w in warehouses %}
+      <div style="margin-top:4px;">
+        <label style="display:inline-flex; align-items:center; gap:6px; font-size:14px; color:var(--text); margin-bottom:0;">
+          <input type="checkbox" name="warehouse_ids" value="{{ w.id }}"
+                 {% if w.fulfillment_center_id == ff.id %}checked{% endif %}>
+          {{ w.name }}
+          {% if w.fulfillment_center_id and w.fulfillment_center_id != ff.id %}
+            <span class="muted">(сейчас привязан к другому ФФ — отметьте, чтобы перевести сюда)</span>
+          {% endif %}
+        </label>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="submit">Сохранить</button>
+    <a href="/fulfillment-centers" class="btn btn-secondary">Отмена</a>
+  </form>
+</div>
+{% endblock %}

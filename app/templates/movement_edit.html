@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Изменить движение{% endblock %}
+{% block content %}
+<h1>Изменить движение</h1>
+
+<div class="card">
+  <form class="inline" method="post" action="/movements/{{ m.id }}/edit">
+    <div><label>Товар</label>
+      <select name="product_id" required>
+        {% for p in products %}
+        <option value="{{ p.id }}" {% if p.id == m.product_id %}selected{% endif %}>{{ p.name }} ({{ p.sku }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Склад</label>
+      <select name="warehouse_id" required>
+        {% for w in warehouses %}
+        <option value="{{ w.id }}" {% if w.id == m.warehouse_id %}selected{% endif %}>{{ w.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Количество</label><input type="number" name="quantity" min="1" value="{{ m.delta | abs }}" required></div>
+    <div><label>Комментарий</label><input type="text" name="comment" value="{{ m.comment or '' }}"></div>
+    <button type="submit">Сохранить</button>
+    <a href="/movements" class="btn btn-secondary">Отмена</a>
+  </form>
+  <p class="muted">
+    Тип движения ({{ m.movement_type }}) менять нельзя — приход останется приходом,
+    списание останется списанием. Меняются только товар, склад, количество и комментарий.
+    Если нужно поменять сам тип — удалите это движение и внесите новое.
+  </p>
+</div>
+{% endblock %}
