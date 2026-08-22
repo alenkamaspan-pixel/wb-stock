@@ -24,12 +24,22 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS fulfillment_centers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS warehouses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     -- ID склада в WB — нужен только чтобы сопоставлять входящие заказы с
     -- вашим складом. Приложение никогда не пишет по этому ID обратно в WB.
     wb_warehouse_id INTEGER UNIQUE,
+    -- Один физический ФФ (фулфилмент-центр) может обслуживать сразу
+    -- несколько таких складов (регионов WB) — см. fulfillment_centers.
+    fulfillment_center_id INTEGER REFERENCES fulfillment_centers(id),
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
@@ -114,8 +124,23 @@ def init_db() -> None:
     try:
         conn.executescript(SCHEMA)
         conn.commit()
+        _migrate(conn)
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Точечные миграции для уже существующих (задеплоенных) баз — без потери
+    данных. CREATE TABLE IF NOT EXISTS в SCHEMA новые таблицы создаёт сам, а
+    вот новую КОЛОНКУ в уже существующей таблице так не добавить — поэтому
+    здесь руками, по одной, и только если её ещё нет."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(warehouses)").fetchall()}
+    if "fulfillment_center_id" not in cols:
+        conn.execute(
+            "ALTER TABLE warehouses ADD COLUMN fulfillment_center_id "
+            "INTEGER REFERENCES fulfillment_centers(id)"
+        )
+        conn.commit()
 
 
 def now_iso() -> str:

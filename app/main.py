@@ -10,7 +10,7 @@ from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL
 from app.database import get_conn, init_db, now_iso
 from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
-from app.sync import sync_once, get_stock_table, get_current_stock
+from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_current_stock
 from app.wb_client import WBClient, WBApiError
 
 app = Flask(__name__)
@@ -70,9 +70,9 @@ def logout():
 @app.route("/")
 @login_required
 def dashboard():
-    rows = get_stock_table(g.db)
+    ff_groups = get_stock_by_ff(g.db)
     last_run = g.db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
-    return render_template("dashboard.html", rows=rows, last_run=last_run)
+    return render_template("dashboard.html", ff_groups=ff_groups, last_run=last_run)
 
 
 @app.route("/sync/run-now", methods=["POST"])
@@ -189,6 +189,98 @@ def movement_transfer():
     return redirect(url_for("movements_page", ok="Перемещение выполнено"))
 
 
+@app.route("/movements/<int:movement_id>/edit", methods=["GET"])
+@login_required
+def movement_edit_form(movement_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("movements_page", error="Недостаточно прав"))
+    m = g.db.execute("SELECT * FROM stock_movements WHERE id = ?", (movement_id,)).fetchone()
+    if not m:
+        return redirect(url_for("movements_page", error="Движение не найдено"))
+    if m["source"] != MovementSource.MANUAL:
+        return redirect(url_for(
+            "movements_page",
+            error="Движения, созданные синхронизацией с WB, менять нельзя — они привязаны к заказу.",
+        ))
+    if m["movement_type"] in (MovementType.TRANSFER_OUT, MovementType.TRANSFER_IN):
+        return redirect(url_for(
+            "movements_page",
+            error="Перемещение нельзя редактировать напрямую — удалите его (обе стороны удалятся "
+                  "вместе) и внесите заново с нужным количеством.",
+        ))
+    products = g.db.execute("SELECT * FROM products ORDER BY name").fetchall()
+    warehouses = g.db.execute("SELECT * FROM warehouses WHERE is_active = 1 ORDER BY name").fetchall()
+    return render_template("movement_edit.html", m=m, products=products, warehouses=warehouses)
+
+
+@app.route("/movements/<int:movement_id>/edit", methods=["POST"])
+@login_required
+def movement_edit(movement_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("movements_page", error="Недостаточно прав"))
+    m = g.db.execute("SELECT * FROM stock_movements WHERE id = ?", (movement_id,)).fetchone()
+    if not m:
+        return redirect(url_for("movements_page", error="Движение не найдено"))
+    if m["source"] != MovementSource.MANUAL or m["movement_type"] in (
+        MovementType.TRANSFER_OUT, MovementType.TRANSFER_IN,
+    ):
+        return redirect(url_for("movements_page", error="Это движение менять нельзя"))
+
+    product_id = int(request.form["product_id"])
+    warehouse_id = int(request.form["warehouse_id"])
+    quantity = abs(int(request.form["quantity"]))
+    comment = request.form.get("comment") or None
+    # Направление (приход/списание) сохраняем таким же, каким было — меняем
+    # только количество, товар и склад, а не тип движения.
+    sign = 1 if m["delta"] >= 0 else -1
+    delta = sign * quantity
+
+    try:
+        g.db.execute(
+            "UPDATE stock_movements SET product_id = ?, warehouse_id = ?, delta = ?, comment = ? "
+            "WHERE id = ?",
+            (product_id, warehouse_id, delta, comment, movement_id),
+        )
+        g.db.commit()
+    except sqlite3.IntegrityError as e:
+        return redirect(url_for(
+            "movement_edit_form", movement_id=movement_id,
+            error=f"Не удалось сохранить: {e}",
+        ))
+    return redirect(url_for("movements_page", ok="Движение изменено"))
+
+
+@app.route("/movements/<int:movement_id>/delete", methods=["POST"])
+@login_required
+def movement_delete(movement_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("movements_page", error="Недостаточно прав"))
+    m = g.db.execute("SELECT * FROM stock_movements WHERE id = ?", (movement_id,)).fetchone()
+    if not m:
+        return redirect(url_for("movements_page", error="Движение не найдено"))
+    if m["source"] != MovementSource.MANUAL:
+        return redirect(url_for(
+            "movements_page",
+            error="Движения, созданные синхронизацией с WB, удалять нельзя — они привязаны к заказу.",
+        ))
+
+    if m["movement_type"] in (MovementType.TRANSFER_OUT, MovementType.TRANSFER_IN):
+        # Перемещение — это две связанные строки (списание с одного склада и
+        # приход на другой). Удаляем всегда обе вместе, чтобы не оставить
+        # "половинку" перемещения, которая испортит остаток на одном складе.
+        related_id = m["related_movement_id"]
+        g.db.execute("DELETE FROM stock_movements WHERE id = ?", (movement_id,))
+        if related_id:
+            g.db.execute("DELETE FROM stock_movements WHERE id = ?", (related_id,))
+    else:
+        g.db.execute("DELETE FROM stock_movements WHERE id = ?", (movement_id,))
+    g.db.commit()
+    return redirect(url_for("movements_page", ok="Движение удалено"))
+
+
 # ----------------------------------------------------------------- products
 @app.route("/products")
 @login_required
@@ -276,8 +368,18 @@ def product_delete(product_id):
 @app.route("/warehouses")
 @login_required
 def warehouses_page():
-    warehouses = g.db.execute("SELECT * FROM warehouses ORDER BY name").fetchall()
-    return render_template("warehouses.html", warehouses=warehouses, can_edit=can_edit(get_current_user()))
+    warehouses = g.db.execute(
+        """
+        SELECT w.*, f.name AS ff_name
+        FROM warehouses w
+        LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
+        ORDER BY w.name
+        """
+    ).fetchall()
+    ff_list = g.db.execute("SELECT * FROM fulfillment_centers WHERE is_active = 1 ORDER BY name").fetchall()
+    return render_template(
+        "warehouses.html", warehouses=warehouses, ff_list=ff_list, can_edit=can_edit(get_current_user()),
+    )
 
 
 @app.route("/warehouses/new", methods=["POST"])
@@ -288,10 +390,15 @@ def warehouse_new():
         return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     name = request.form["name"].strip()
     wb_warehouse_id = request.form.get("wb_warehouse_id", "").strip()
+    fulfillment_center_id = request.form.get("fulfillment_center_id", "").strip()
     try:
         g.db.execute(
-            "INSERT INTO warehouses (name, wb_warehouse_id, is_active, created_at) VALUES (?, ?, 1, ?)",
-            (name, int(wb_warehouse_id) if wb_warehouse_id else None, now_iso()),
+            "INSERT INTO warehouses (name, wb_warehouse_id, fulfillment_center_id, is_active, created_at) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (
+                name, int(wb_warehouse_id) if wb_warehouse_id else None,
+                int(fulfillment_center_id) if fulfillment_center_id else None, now_iso(),
+            ),
         )
         g.db.commit()
     except Exception as e:
@@ -308,7 +415,8 @@ def warehouse_edit_form(warehouse_id):
     warehouse = g.db.execute("SELECT * FROM warehouses WHERE id = ?", (warehouse_id,)).fetchone()
     if not warehouse:
         return redirect(url_for("warehouses_page", error="Склад не найден"))
-    return render_template("warehouse_edit.html", warehouse=warehouse)
+    ff_list = g.db.execute("SELECT * FROM fulfillment_centers WHERE is_active = 1 ORDER BY name").fetchall()
+    return render_template("warehouse_edit.html", warehouse=warehouse, ff_list=ff_list)
 
 
 @app.route("/warehouses/<int:warehouse_id>/edit", methods=["POST"])
@@ -319,11 +427,16 @@ def warehouse_edit(warehouse_id):
         return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     name = request.form["name"].strip()
     wb_warehouse_id = request.form.get("wb_warehouse_id", "").strip()
+    fulfillment_center_id = request.form.get("fulfillment_center_id", "").strip()
     is_active = 1 if request.form.get("is_active") == "1" else 0
     try:
         g.db.execute(
-            "UPDATE warehouses SET name = ?, wb_warehouse_id = ?, is_active = ? WHERE id = ?",
-            (name, int(wb_warehouse_id) if wb_warehouse_id else None, is_active, warehouse_id),
+            "UPDATE warehouses SET name = ?, wb_warehouse_id = ?, fulfillment_center_id = ?, "
+            "is_active = ? WHERE id = ?",
+            (
+                name, int(wb_warehouse_id) if wb_warehouse_id else None,
+                int(fulfillment_center_id) if fulfillment_center_id else None, is_active, warehouse_id,
+            ),
         )
         g.db.commit()
     except sqlite3.IntegrityError:
@@ -380,6 +493,98 @@ def warehouses_import():
         added += 1
     g.db.commit()
     return redirect(url_for("warehouses_page", ok=f"Импортировано складов: {added}"))
+
+
+# ------------------------------------------------------ fulfillment centers
+@app.route("/fulfillment-centers")
+@login_required
+def ff_page():
+    ff_list = g.db.execute("SELECT * FROM fulfillment_centers ORDER BY name").fetchall()
+    warehouses = g.db.execute("SELECT * FROM warehouses ORDER BY name").fetchall()
+    return render_template(
+        "fulfillment_centers.html", ff_list=ff_list, warehouses=warehouses,
+        can_edit=can_edit(get_current_user()),
+    )
+
+
+@app.route("/fulfillment-centers/new", methods=["POST"])
+@login_required
+def ff_new():
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("ff_page", error="Недостаточно прав"))
+    name = request.form["name"].strip()
+    try:
+        g.db.execute(
+            "INSERT INTO fulfillment_centers (name, is_active, created_at) VALUES (?, 1, ?)",
+            (name, now_iso()),
+        )
+        g.db.commit()
+    except Exception as e:
+        return redirect(url_for("ff_page", error=f"Не удалось добавить ФФ: {e}"))
+    return redirect(url_for("ff_page", ok="Фулфилмент-центр добавлен"))
+
+
+@app.route("/fulfillment-centers/<int:ff_id>/edit", methods=["GET"])
+@login_required
+def ff_edit_form(ff_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("ff_page", error="Недостаточно прав"))
+    ff = g.db.execute("SELECT * FROM fulfillment_centers WHERE id = ?", (ff_id,)).fetchone()
+    if not ff:
+        return redirect(url_for("ff_page", error="ФФ не найден"))
+    warehouses = g.db.execute("SELECT * FROM warehouses ORDER BY name").fetchall()
+    return render_template("ff_edit.html", ff=ff, warehouses=warehouses)
+
+
+@app.route("/fulfillment-centers/<int:ff_id>/edit", methods=["POST"])
+@login_required
+def ff_edit(ff_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("ff_page", error="Недостаточно прав"))
+    ff = g.db.execute("SELECT * FROM fulfillment_centers WHERE id = ?", (ff_id,)).fetchone()
+    if not ff:
+        return redirect(url_for("ff_page", error="ФФ не найден"))
+    name = request.form["name"].strip()
+    is_active = 1 if request.form.get("is_active") == "1" else 0
+    g.db.execute(
+        "UPDATE fulfillment_centers SET name = ?, is_active = ? WHERE id = ?",
+        (name, is_active, ff_id),
+    )
+    # Склады, отмеченные галочкой в форме — привязываем к этому ФФ; те, что
+    # раньше были привязаны именно к нему, но галочку сняли — отвязываем.
+    # Склады, привязанные к ДРУГИМ ФФ и не отмеченные здесь, не трогаем.
+    selected_ids = {int(x) for x in request.form.getlist("warehouse_ids")}
+    all_warehouse_ids = [row["id"] for row in g.db.execute("SELECT id FROM warehouses").fetchall()]
+    for wid in all_warehouse_ids:
+        if wid in selected_ids:
+            g.db.execute(
+                "UPDATE warehouses SET fulfillment_center_id = ? WHERE id = ?", (ff_id, wid),
+            )
+        else:
+            g.db.execute(
+                "UPDATE warehouses SET fulfillment_center_id = NULL "
+                "WHERE id = ? AND fulfillment_center_id = ?",
+                (wid, ff_id),
+            )
+    g.db.commit()
+    return redirect(url_for("ff_page", ok="Фулфилмент-центр изменён"))
+
+
+@app.route("/fulfillment-centers/<int:ff_id>/delete", methods=["POST"])
+@login_required
+def ff_delete(ff_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("ff_page", error="Недостаточно прав"))
+    # Привязанные склады не удаляются — просто отвязываются от этого ФФ,
+    # их остатки и история движений никуда не пропадают.
+    g.db.execute("UPDATE warehouses SET fulfillment_center_id = NULL WHERE fulfillment_center_id = ?", (ff_id,))
+    g.db.execute("DELETE FROM fulfillment_centers WHERE id = ?", (ff_id,))
+    g.db.commit()
+    return redirect(url_for("ff_page", ok="Фулфилмент-центр удалён"))
 
 
 # -------------------------------------------------------------------- users

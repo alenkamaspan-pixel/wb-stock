@@ -43,7 +43,7 @@ def get_current_stock(conn: sqlite3.Connection, product_id: int, warehouse_id: i
 
 
 def get_stock_table(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Текущие остатки по всем товарам и складам (для дашборда)."""
+    """Текущие остатки по всем товарам и складам (плоский список, без группировки по ФФ)."""
     return conn.execute(
         """
         SELECT p.id AS product_id, p.sku, p.name,
@@ -56,6 +56,70 @@ def get_stock_table(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY p.name, w.name
         """
     ).fetchall()
+
+
+def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
+    """Остатки, сгруппированные по фулфилмент-центрам — для дашборда.
+
+    Один ФФ (физический склад-партнёр) может обслуживать сразу несколько
+    складов WB (регионов). Списание по заказу по-прежнему идёт с конкретного
+    склада WB (это не меняется), а здесь мы отдельно считаем сумму по всем
+    складам, привязанным к одному ФФ — это только витрина, без своей
+    бухгалтерии движений.
+
+    Возвращает список групп в порядке: сначала привязанные ФФ (по алфавиту),
+    в конце — склады без привязки к ФФ, единой группой. Каждая группа:
+      {
+        "ff_id": int | None,
+        "ff_name": str,
+        "rows": [sqlite3.Row, ...],       # разбивка по складам внутри ФФ
+        "totals": [{"product_id", "sku", "name", "quantity"}, ...],  # итого по товару
+      }
+    """
+    flat = conn.execute(
+        """
+        SELECT p.id AS product_id, p.sku, p.name AS product_name,
+               w.id AS warehouse_id, w.name AS warehouse_name,
+               f.id AS ff_id, f.name AS ff_name,
+               COALESCE(SUM(m.delta), 0) AS quantity
+        FROM stock_movements m
+        JOIN products p ON p.id = m.product_id
+        JOIN warehouses w ON w.id = m.warehouse_id
+        LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
+        GROUP BY p.id, w.id
+        ORDER BY (f.name IS NULL), f.name, p.name, w.name
+        """
+    ).fetchall()
+
+    groups: dict = {}
+    order: list = []
+    for row in flat:
+        key = row["ff_id"]  # None — склад без привязки к ФФ
+        if key not in groups:
+            groups[key] = {
+                "ff_id": key,
+                "ff_name": row["ff_name"] or "Без ФФ (внутренние или ещё не привязанные склады)",
+                "rows": [],
+                "_totals_map": {},
+            }
+            order.append(key)
+        group = groups[key]
+        group["rows"].append(row)
+        totals_map = group["_totals_map"]
+        if row["product_id"] not in totals_map:
+            totals_map[row["product_id"]] = {
+                "product_id": row["product_id"], "sku": row["sku"],
+                "name": row["product_name"], "quantity": 0,
+            }
+        totals_map[row["product_id"]]["quantity"] += row["quantity"]
+
+    result = []
+    for key in order:
+        group = groups[key]
+        group["totals"] = sorted(group["_totals_map"].values(), key=lambda t: t["name"])
+        del group["_totals_map"]
+        result.append(group)
+    return result
 
 
 def _find_or_create_product(conn: sqlite3.Connection, nm_id, barcode, name_hint: str) -> int:
