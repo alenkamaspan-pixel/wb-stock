@@ -16,7 +16,7 @@ from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_product_to
 from app.wb_client import WBClient, WBApiError
 from app.analytics import (
     get_period_stats, get_daily_series, get_velocity_table, get_product_ranking,
-    get_ff_comparison, get_movements_journal, get_filter_options,
+    get_ff_comparison, get_movements_journal, get_filter_options, get_cancellations_table,
 )
 
 app = Flask(__name__)
@@ -130,6 +130,7 @@ def analytics_page():
     velocity = get_velocity_table(g.db, velocity_window, ff_id, product_id)
     ranking = get_product_ranking(g.db, date_from, date_to)
     ff_comparison = get_ff_comparison(g.db, date_from, date_to)
+    cancellations = get_cancellations_table(g.db, date_from, date_to, ff_id, product_id)
     journal = get_movements_journal(g.db, date_from, date_to, ff_id, product_id)
     filters = get_filter_options(g.db)
 
@@ -141,6 +142,7 @@ def analytics_page():
         "writeoff": sum(r["writeoff_qty"] for r in period_stats),
         "net_sold": sum(r["net_sold"] for r in period_stats),
     }
+    cancellations_total = sum(r["cancelled_qty"] for r in cancellations)
 
     return render_template(
         "analytics.html",
@@ -149,6 +151,7 @@ def analytics_page():
         period_stats=period_stats, period_totals=period_totals,
         daily_series=daily_series, max_daily=max_daily,
         velocity=velocity, ranking=ranking, ff_comparison=ff_comparison,
+        cancellations=cancellations, cancellations_total=cancellations_total,
         journal=journal, ff_list=filters["ff_list"], products=filters["products"],
     )
 

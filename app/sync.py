@@ -278,7 +278,10 @@ def sync_once(client: WBClient | None = None) -> dict:
         if tracked:
             ids = [int(o["wb_order_id"]) for o in tracked if str(o["wb_order_id"]).isdigit()]
             statuses = client.get_orders_status(ids) if ids else []
-            status_map = {str(s.get("id")): s.get("status") for s in statuses}
+            # WB отдаёт статус сборочного задания в поле supplierStatus
+            # (new/confirm/complete/cancel) — поля "status" в ответе нет вообще,
+            # из-за чего смена статуса раньше не замечалась ни разу.
+            status_map = {str(s.get("id")): s.get("supplierStatus") for s in statuses}
 
             for order in tracked:
                 new_status = status_map.get(order["wb_order_id"])

@@ -211,6 +211,41 @@ def get_ff_comparison(conn: sqlite3.Connection, date_from: str, date_to: str) ->
     return result
 
 
+def get_cancellations_table(
+    conn: sqlite3.Connection, date_from: str, date_to: str,
+    ff_id=None, product_id=None,
+) -> list[dict]:
+    """Отменённые заказы за период — по товару и конкретному складу (не ФФ
+    целиком), чтобы было видно, на каком складе и какого артикула больше
+    всего отмен. movement_type = 'sale_reversal', delta там уже положительный
+    (возврат остатка), поэтому сумма delta и есть отменённое количество."""
+    lo, hi = _date_bounds(date_from, date_to)
+    sql = f"""
+        SELECT p.id AS product_id, p.sku, p.name AS product_name,
+               w.id AS warehouse_id, w.name AS warehouse_name,
+               f.id AS ff_id, f.name AS ff_name,
+               SUM(m.delta) AS cancelled_qty,
+               COUNT(*) AS cancellations_count
+        FROM stock_movements m
+        JOIN products p ON p.id = m.product_id
+        JOIN warehouses w ON w.id = m.warehouse_id
+        LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
+        WHERE m.movement_type = 'sale_reversal'
+          AND m.created_at BETWEEN {lo} AND {hi}
+          {"AND f.id = :ff_id" if ff_id else ""}
+          {"AND p.id = :product_id" if product_id else ""}
+        GROUP BY p.id, w.id
+        ORDER BY cancelled_qty DESC
+    """
+    params = {}
+    if ff_id:
+        params["ff_id"] = ff_id
+    if product_id:
+        params["product_id"] = product_id
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_movements_journal(
     conn: sqlite3.Connection, date_from: str = None, date_to: str = None,
     ff_id=None, product_id=None, limit: int = 300,
