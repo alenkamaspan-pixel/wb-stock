@@ -118,6 +118,36 @@
 </div>
 
 <div class="card">
+  <div class="ff-header">
+    <h2>Отмены за период — по товару и складу</h2>
+    <div class="ff-total-badge {{ 'negative' if cancellations_total else '' }}">{{ cancellations_total }} шт. отменено</div>
+  </div>
+  <p class="muted">
+    Сколько какого артикула вернулось на остаток из-за отмены заказа WB, с разбивкой по конкретному складу
+    (не по ФФ целиком) — чтобы было видно, где отмены случаются чаще всего.
+  </p>
+  {% if cancellations %}
+  <table>
+    <thead><tr><th>Товар</th><th>Склад</th><th>ФФ</th><th>Отменено, шт.</th><th>Кол-во отмен</th></tr></thead>
+    <tbody>
+      {% for c in cancellations %}
+      <tr>
+        <td>{{ c.product_name }} <span class="muted">({{ c.sku }})</span></td>
+        <td>{{ c.warehouse_name }}</td>
+        <td>
+          {% if c.ff_id %}<span class="ff-tag ff-color-{{ c.ff_id % 6 }}">{{ c.ff_name }}</span>
+          {% else %}<span class="ff-tag ff-color-none">Без ФФ</span>{% endif %}
+        </td>
+        <td>{{ c.cancelled_qty }}</td>
+        <td class="muted">{{ c.cancellations_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">За выбранный период и фильтры отмен не было.</p>{% endif %}
+</div>
+
+<div class="card">
   <h2>Темп продаж и сколько дней осталось</h2>
   <p class="muted">
     Темп считается по последним {{ velocity_window }} дн. (нетто-продажи ÷ {{ velocity_window }}).
