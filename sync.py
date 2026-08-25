@@ -58,8 +58,24 @@ def get_stock_table(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
-    """Остатки, сгруппированные по фулфилмент-центрам — для дашборда.
+def get_product_totals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Итого по каждому товару (артикулу) сразу по ВСЕМ складам и ФФ —
+    для верхнего сводного блока дашборда."""
+    return conn.execute(
+        """
+        SELECT p.id AS product_id, p.sku, p.name,
+               COALESCE(SUM(m.delta), 0) AS quantity
+        FROM stock_movements m
+        JOIN products p ON p.id = m.product_id
+        GROUP BY p.id
+        ORDER BY p.name
+        """
+    ).fetchall()
+
+
+def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[dict]:
+    """Остатки, сгруппированные по фулфилмент-центрам — для дашборда и для
+    раздела «Остатки на дату» в аналитике.
 
     Один ФФ (физический склад-партнёр) может обслуживать сразу несколько
     складов WB (регионов). Списание по заказу по-прежнему идёт с конкретного
@@ -67,17 +83,31 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
     складам, привязанным к одному ФФ — это только витрина, без своей
     бухгалтерии движений.
 
+    as_of: дата в формате YYYY-MM-DD (московское время, конец дня) — если
+    указана, считает остаток НЕ на сейчас, а на конец этого дня (сумма всех
+    движений с датой не позже этого момента). По умолчанию (None) — текущий
+    остаток на сейчас, как и раньше.
+
     Возвращает список групп в порядке: сначала привязанные ФФ (по алфавиту),
     в конце — склады без привязки к ФФ, единой группой. Каждая группа:
       {
         "ff_id": int | None,
         "ff_name": str,
-        "rows": [sqlite3.Row, ...],       # разбивка по складам внутри ФФ
+        "ff_total": int,                  # сумма по ВСЕМ товарам сразу в рамках ФФ
+        "rows": [sqlite3.Row, ...],        # детальная разбивка: товар × склад
         "totals": [{"product_id", "sku", "name", "quantity"}, ...],  # итого по товару
+        "warehouse_totals": [{"warehouse_id", "warehouse_name", "quantity"}, ...],  # итого по складу (все товары)
       }
     """
+    where_clause = ""
+    params: dict = {}
+    if as_of:
+        # конец дня по Москве -> в UTC для сравнения со строками created_at
+        where_clause = "WHERE m.created_at <= datetime(:as_of || ' 23:59:59', '-3 hours')"
+        params["as_of"] = as_of
+
     flat = conn.execute(
-        """
+        f"""
         SELECT p.id AS product_id, p.sku, p.name AS product_name,
                w.id AS warehouse_id, w.name AS warehouse_name,
                f.id AS ff_id, f.name AS ff_name,
@@ -86,9 +116,11 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
         JOIN products p ON p.id = m.product_id
         JOIN warehouses w ON w.id = m.warehouse_id
         LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
+        {where_clause}
         GROUP BY p.id, w.id
         ORDER BY (f.name IS NULL), f.name, p.name, w.name
-        """
+        """,
+        params,
     ).fetchall()
 
     groups: dict = {}
@@ -101,10 +133,12 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
                 "ff_name": row["ff_name"] or "Без ФФ (внутренние или ещё не привязанные склады)",
                 "rows": [],
                 "_totals_map": {},
+                "_warehouse_totals_map": {},
             }
             order.append(key)
         group = groups[key]
         group["rows"].append(row)
+
         totals_map = group["_totals_map"]
         if row["product_id"] not in totals_map:
             totals_map[row["product_id"]] = {
@@ -113,11 +147,24 @@ def get_stock_by_ff(conn: sqlite3.Connection) -> list[dict]:
             }
         totals_map[row["product_id"]]["quantity"] += row["quantity"]
 
+        wh_totals = group["_warehouse_totals_map"]
+        if row["warehouse_id"] not in wh_totals:
+            wh_totals[row["warehouse_id"]] = {
+                "warehouse_id": row["warehouse_id"], "warehouse_name": row["warehouse_name"],
+                "quantity": 0,
+            }
+        wh_totals[row["warehouse_id"]]["quantity"] += row["quantity"]
+
     result = []
     for key in order:
         group = groups[key]
         group["totals"] = sorted(group["_totals_map"].values(), key=lambda t: t["name"])
+        group["warehouse_totals"] = sorted(
+            group["_warehouse_totals_map"].values(), key=lambda w: w["warehouse_name"]
+        )
+        group["ff_total"] = sum(t["quantity"] for t in group["totals"])
         del group["_totals_map"]
+        del group["_warehouse_totals_map"]
         result.append(group)
     return result
 
@@ -231,7 +278,10 @@ def sync_once(client: WBClient | None = None) -> dict:
         if tracked:
             ids = [int(o["wb_order_id"]) for o in tracked if str(o["wb_order_id"]).isdigit()]
             statuses = client.get_orders_status(ids) if ids else []
-            status_map = {str(s.get("id")): s.get("status") for s in statuses}
+            # WB отдаёт статус сборочного задания в поле supplierStatus
+            # (new/confirm/complete/cancel) — поля "status" в ответе нет вообще,
+            # из-за чего смена статуса раньше не замечалась ни разу.
+            status_map = {str(s.get("id")): s.get("supplierStatus") for s in statuses}
 
             for order in tracked:
                 new_status = status_map.get(order["wb_order_id"])

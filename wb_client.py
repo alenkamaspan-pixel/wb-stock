@@ -97,7 +97,8 @@ class WBClient:
         return (data or {}).get("orders", [])
 
     def get_orders_status(self, order_ids: list[int]) -> list[dict]:
-        """Статусы заданий по списку ID заказов."""
+        """Статусы заданий по списку ID заказов. У WB это поле supplierStatus
+        (new/confirm/complete/cancel) — общего поля "status" в ответе нет."""
         if not order_ids:
             return []
         url = f"{self.marketplace_base}/api/v3/orders/status"

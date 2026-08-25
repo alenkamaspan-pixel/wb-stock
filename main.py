@@ -1,27 +1,40 @@
 """Точка входа приложения: Flask-роуты, авторизация, фоновая синхронизация с WB."""
+import csv
 import datetime as dt
+import io
 import sqlite3
 import threading
 import time
 
-from flask import Flask, request, session, redirect, url_for, render_template, g
+from flask import Flask, request, session, redirect, url_for, render_template, g, Response
 
 from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL_MINUTES
 from app.database import get_conn, init_db, now_iso
 from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
-from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_current_stock
+from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock
 from app.wb_client import WBClient, WBApiError
+from app.analytics import (
+    get_period_stats, get_daily_series, get_velocity_table, get_product_ranking,
+    get_ff_comparison, get_movements_journal, get_filter_options, get_cancellations_table,
+)
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
 
+MSK_OFFSET = dt.timedelta(hours=3)  # Москва — фиксированный сдвиг от UTC, без перехода на летнее время
+
+
 def dtfmt(value, fmt="%d.%m.%Y %H:%M"):
+    """В базе все даты хранятся в UTC (см. now_iso в database.py). Для показа
+    пользователю переводим в московское время — иначе даты и группировка
+    «по дням» на странице «Аналитика» будут расходиться с тем, что человек
+    физически видит на часах."""
     if not value:
         return "—"
     try:
-        return dt.datetime.fromisoformat(value).strftime(fmt)
+        return (dt.datetime.fromisoformat(value) + MSK_OFFSET).strftime(fmt)
     except (ValueError, TypeError):
         return value
 
@@ -71,8 +84,13 @@ def logout():
 @login_required
 def dashboard():
     ff_groups = get_stock_by_ff(g.db)
+    product_totals = get_product_totals(g.db)
+    grand_total = sum(t["quantity"] for t in product_totals)
     last_run = g.db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
-    return render_template("dashboard.html", ff_groups=ff_groups, last_run=last_run)
+    return render_template(
+        "dashboard.html", ff_groups=ff_groups, product_totals=product_totals,
+        grand_total=grand_total, last_run=last_run,
+    )
 
 
 @app.route("/sync/run-now", methods=["POST"])
@@ -84,16 +102,94 @@ def sync_run_now():
     return redirect(url_for("dashboard", ok="Синхронизация выполнена"))
 
 
+# ---------------------------------------------------------------- аналитика
+def _analytics_params():
+    """Общие параметры фильтра для /analytics и /analytics/export.csv —
+    по умолчанию последние 30 дней (по МСК) и окно скорости продаж 14 дней."""
+    today = (dt.datetime.utcnow() + MSK_OFFSET).date()
+    default_from = (today - dt.timedelta(days=30)).isoformat()
+    date_from = request.args.get("date_from") or default_from
+    date_to = request.args.get("date_to") or today.isoformat()
+    ff_id = request.args.get("ff_id") or None
+    product_id = request.args.get("product_id") or None
+    ff_id = int(ff_id) if ff_id else None
+    product_id = int(product_id) if product_id else None
+    try:
+        velocity_window = int(request.args.get("velocity_window") or 14)
+    except ValueError:
+        velocity_window = 14
+    return date_from, date_to, ff_id, product_id, velocity_window
+
+
+@app.route("/analytics")
+@login_required
+def analytics_page():
+    date_from, date_to, ff_id, product_id, velocity_window = _analytics_params()
+    period_stats = get_period_stats(g.db, date_from, date_to, ff_id, product_id)
+    daily_series = get_daily_series(g.db, date_from, date_to, ff_id, product_id)
+    velocity = get_velocity_table(g.db, velocity_window, ff_id, product_id)
+    ranking = get_product_ranking(g.db, date_from, date_to)
+    ff_comparison = get_ff_comparison(g.db, date_from, date_to)
+    cancellations = get_cancellations_table(g.db, date_from, date_to, ff_id, product_id)
+    journal = get_movements_journal(g.db, date_from, date_to, ff_id, product_id)
+    filters = get_filter_options(g.db)
+
+    max_daily = max([abs(d["net_sold"]) for d in daily_series], default=0) or 1
+    period_totals = {
+        "income": sum(r["income_qty"] for r in period_stats),
+        "sale": sum(r["sale_qty"] for r in period_stats),
+        "reversal": sum(r["reversal_qty"] for r in period_stats),
+        "writeoff": sum(r["writeoff_qty"] for r in period_stats),
+        "net_sold": sum(r["net_sold"] for r in period_stats),
+    }
+    cancellations_total = sum(r["cancelled_qty"] for r in cancellations)
+
+    return render_template(
+        "analytics.html",
+        date_from=date_from, date_to=date_to, ff_id=ff_id, product_id=product_id,
+        velocity_window=velocity_window,
+        period_stats=period_stats, period_totals=period_totals,
+        daily_series=daily_series, max_daily=max_daily,
+        velocity=velocity, ranking=ranking, ff_comparison=ff_comparison,
+        cancellations=cancellations, cancellations_total=cancellations_total,
+        journal=journal, ff_list=filters["ff_list"], products=filters["products"],
+    )
+
+
+@app.route("/analytics/export.csv")
+@login_required
+def analytics_export_csv():
+    date_from, date_to, ff_id, product_id, _ = _analytics_params()
+    rows = get_movements_journal(g.db, date_from, date_to, ff_id, product_id, limit=100000)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Дата", "Товар", "Артикул", "Склад", "ФФ", "Тип", "Кол-во", "Источник", "Кто внёс", "Комментарий"])
+    for m in rows:
+        writer.writerow([
+            dtfmt(m["created_at"]), m["product_name"] or "", m["product_sku"] or "",
+            m["warehouse_name"] or "", m["ff_name"] or "", m["movement_type"], m["delta"],
+            "WB" if m["source"] == "wb_sync" else "вручную",
+            m["created_by_username"] or "", m["comment"] or "",
+        ])
+    output = buf.getvalue()
+    return Response(
+        "﻿" + output, mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=analytics_{date_from}_{date_to}.csv"},
+    )
+
+
 # ---------------------------------------------------------------- movements
 @app.route("/movements")
 @login_required
 def movements_page():
     movements = g.db.execute(
         """
-        SELECT m.*, p.name AS product_name, w.name AS warehouse_name, u.username AS created_by_username
+        SELECT m.*, p.name AS product_name, w.name AS warehouse_name,
+               f.id AS ff_id, f.name AS ff_name, u.username AS created_by_username
         FROM stock_movements m
         LEFT JOIN products p ON p.id = m.product_id
         LEFT JOIN warehouses w ON w.id = m.warehouse_id
+        LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
         LEFT JOIN users u ON u.id = m.created_by_id
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT 300
@@ -370,7 +466,7 @@ def product_delete(product_id):
 def warehouses_page():
     warehouses = g.db.execute(
         """
-        SELECT w.*, f.name AS ff_name
+        SELECT w.*, f.id AS ff_id, f.name AS ff_name
         FROM warehouses w
         LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
         ORDER BY w.name
@@ -615,6 +711,33 @@ def user_new():
     )
     g.db.commit()
     return redirect(url_for("users_page", ok="Пользователь добавлен"))
+
+
+@app.route("/admin/reset-stock", methods=["POST"])
+@login_required
+def admin_reset_stock():
+    """Полный сброс остатков: удаляет ВСЕ движения (и внесённые вручную, и
+    созданные синхронизацией с WB) и всю историю заказов WB — чтобы начать
+    учёт заново с чистого листа. Товары, склады, ФФ и пользователи не
+    затрагиваются. Доступно только администратору, требует явного
+    подтверждения — действие необратимо."""
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("dashboard", error="Сбросить остатки может только администратор"))
+    confirm_text = request.form.get("confirm_text", "").strip()
+    if confirm_text != "СБРОСИТЬ":
+        return redirect(url_for(
+            "users_page",
+            error="Для подтверждения нужно ввести слово СБРОСИТЬ (заглавными буквами) — ничего не удалено",
+        ))
+    g.db.execute("DELETE FROM stock_movements")
+    g.db.execute("DELETE FROM wb_orders")
+    g.db.commit()
+    return redirect(url_for(
+        "users_page",
+        ok="Готово: все остатки, движения и история заказов WB обнулены. "
+           "Товары, склады, ФФ и пользователи не тронуты — можно вносить приход заново.",
+    ))
 
 
 # ------------------------------------------------------------------- запуск
