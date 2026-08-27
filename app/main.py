@@ -15,7 +15,7 @@ from app.auth import hash_password, verify_password, get_current_user, login_req
 from app.sync import (
     sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock,
     get_stock_locations, CANCEL_STATUSES, WB_STATUS_CANCEL_VALUES, reconcile_all_orders,
-    backfill_order_history,
+    undo_history_backfill,
 )
 from app.wb_client import WBClient, WBApiError
 from app.analytics import (
@@ -386,27 +386,45 @@ def wb_diagnostics_reconcile():
 @app.route("/wb-diagnostics/backfill-history", methods=["POST"])
 @login_required
 def wb_diagnostics_backfill_history():
-    """Разовая (можно запускать и повторно) догрузка истории заказов через
-    общий метод WB (`/api/v3/orders`), а не только «новые» (`/orders/new`) —
-    чтобы поймать заказы, отменённые клиентом так быстро, что обычная
-    синхронизация их вообще не успела увидеть (см. диагностику 27.08.2026:
-    так пропало 126 из 131 реальной отмены). Как и разовая сверка, меняет
-    остатки (для найденных активных заказов), поэтому требует подтверждения."""
+    """ОТКЛЮЧЕНО 27.08.2026: эта функция ошибочно предполагала, что общий
+    метод WB (`/api/v3/orders`) отдаёт только заказы из «рабочего» периода —
+    на деле он отдаёт ВСЮ историю заказов магазина за всё время (годы), и
+    код списывал остаток по каждому найденному активному заказу как по
+    только что случившейся продаже — это увело остаток по нескольким
+    товарам в глубокий минус. Кнопка убрана со страницы диагностики; этот
+    маршрут оставлен только чтобы старая (уже загруженная в браузере)
+    страница с формой не могла случайно вызвать sync.backfill_order_history()
+    повторно. См. sync.undo_history_backfill() для отмены уже нанесённого
+    ущерба."""
+    return redirect(url_for(
+        "wb_diagnostics_page",
+        error="Догрузка истории отключена — она ошибочно списывала остаток по многолетним старым "
+              "заказам. Ничего не выполнено. Используйте «Отменить последствия догрузки истории» ниже.",
+    ))
+
+
+@app.route("/wb-diagnostics/undo-backfill", methods=["POST"])
+@login_required
+def wb_diagnostics_undo_backfill():
+    """Аварийная отмена последствий отключённой выше догрузки истории —
+    см. sync.undo_history_backfill(). Удаляет ровно то, что создал сбойный
+    запуск (движения с характерной пометкой в комментарии и связанные с
+    ними строки wb_orders), возвращая остаток к состоянию до бага."""
     user = get_current_user()
     if not is_admin(user):
         return redirect(url_for("dashboard", error="Недостаточно прав"))
     confirm_text = request.form.get("confirm_text", "").strip()
-    if confirm_text != "ДОГРУЗИТЬ":
+    if confirm_text != "ОТМЕНИТЬ":
         return redirect(url_for(
             "wb_diagnostics_page",
-            error="Для подтверждения нужно ввести слово ДОГРУЗИТЬ (заглавными буквами) — ничего не изменено",
+            error="Для подтверждения нужно ввести слово ОТМЕНИТЬ (заглавными буквами) — ничего не изменено",
         ))
     try:
-        report = backfill_order_history(WBClient())
+        report = undo_history_backfill()
     except Exception as e:
-        return redirect(url_for("wb_diagnostics_page", error=f"Не удалось выполнить догрузку: {e}"))
+        return redirect(url_for("wb_diagnostics_page", error=f"Не удалось отменить: {e}"))
 
-    return render_template("wb_backfill_result.html", **report)
+    return render_template("wb_undo_backfill_result.html", **report)
 
 
 def _resolve_location(conn, location_key: str):

@@ -685,3 +685,54 @@ def backfill_order_history(client: WBClient | None = None) -> dict:
         "skipped_no_warehouse": skipped_no_warehouse,
         "errors": errors,
     }
+
+
+BACKFILL_MOVEMENT_MARKER = "(найден догрузкой истории)"
+
+
+def undo_history_backfill(marker: str = BACKFILL_MOVEMENT_MARKER) -> dict:
+    """АВАРИЙНАЯ отмена последствий ошибки в backfill_order_history()
+    (27.08.2026): та функция предполагала, что общий метод WB
+    (`/api/v3/orders`) отдаёт только заказы из «рабочего» периода — на деле
+    он отдаёт ВСЮ историю заказов магазина на WB за всё время, включая те,
+    что были задолго до этого приложения. Код списывал остаток по КАЖДОМУ
+    найденному активному заказу, как будто это только что случившаяся
+    продажа — из-за этого остаток по нескольким товарам массово ушёл в
+    минус.
+
+    Отменяет ровно то, что создал этот сбойный запуск, и ничего больше:
+    все движения, созданные им, однозначно помечены комментарием
+    `marker` (see backfill_order_history) — удаляем их и сами строки
+    wb_orders, к которым они относятся, восстанавливая остаток к состоянию
+    до бага. «Отменённые» заказы из того же запуска (без движения — на
+    остаток и так не повлияли) этой функцией НЕ трогаются: они безвредны,
+    их можно спокойно почистить отдельно, без спешки.
+    """
+    conn = get_conn()
+    try:
+        tainted_orders = conn.execute(
+            "SELECT DISTINCT wb_order_id FROM stock_movements "
+            "WHERE comment LIKE ? AND wb_order_id IS NOT NULL",
+            (f"%{marker}%",),
+        ).fetchall()
+        tainted_order_ids = [row["wb_order_id"] for row in tainted_orders]
+
+        movements_deleted = conn.execute(
+            "SELECT COUNT(*) AS c FROM stock_movements WHERE comment LIKE ?", (f"%{marker}%",)
+        ).fetchone()["c"]
+
+        conn.execute("DELETE FROM stock_movements WHERE comment LIKE ?", (f"%{marker}%",))
+
+        orders_deleted = 0
+        if tainted_order_ids:
+            placeholders = ",".join("?" for _ in tainted_order_ids)
+            orders_deleted = conn.execute(
+                f"SELECT COUNT(*) AS c FROM wb_orders WHERE id IN ({placeholders})",
+                tainted_order_ids,
+            ).fetchone()["c"]
+            conn.execute(f"DELETE FROM wb_orders WHERE id IN ({placeholders})", tainted_order_ids)
+
+        conn.commit()
+        return {"movements_deleted": movements_deleted, "orders_deleted": orders_deleted}
+    finally:
+        conn.close()
