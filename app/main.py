@@ -14,7 +14,8 @@ from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
 from app.sync import (
     sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock,
-    get_stock_locations, CANCEL_STATUSES,
+    get_stock_locations, CANCEL_STATUSES, WB_STATUS_CANCEL_VALUES, reconcile_all_orders,
+    backfill_order_history,
 )
 from app.wb_client import WBClient, WBApiError
 from app.analytics import (
@@ -330,7 +331,82 @@ def wb_diagnostics_page():
         probe_results=probe_results,
         probe_error=probe_error,
         cancel_statuses=sorted(CANCEL_STATUSES),
+        wb_status_cancel_values=sorted(WB_STATUS_CANCEL_VALUES),
     )
+
+
+@app.route("/wb-diagnostics/reconcile", methods=["POST"])
+@login_required
+def wb_diagnostics_reconcile():
+    """Разовая (можно запускать и повторно) сверка ВСЕХ заказов с актуальным
+    статусом WB — включая уже 'complete' — чтобы вернуть остаток по заказам,
+    отменённым клиентом, но незамеченным из-за того, что supplierStatus у
+    них не менялся (см. диагностику 27.08.2026 и sync.reconcile_all_orders).
+    В отличие от обычной синхронизации, эта операция меняет остатки задним
+    числом, поэтому требует явного текстового подтверждения — как сброс
+    остатков на странице «Пользователи»."""
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("dashboard", error="Недостаточно прав"))
+    confirm_text = request.form.get("confirm_text", "").strip()
+    if confirm_text != "ПЕРЕСЧИТАТЬ":
+        return redirect(url_for(
+            "wb_diagnostics_page",
+            error="Для подтверждения нужно ввести слово ПЕРЕСЧИТАТЬ (заглавными буквами) — ничего не изменено",
+        ))
+    try:
+        report = reconcile_all_orders(WBClient())
+    except Exception as e:
+        return redirect(url_for("wb_diagnostics_page", error=f"Не удалось выполнить пересчёт: {e}"))
+
+    fixed_detailed = []
+    for item in report["fixed"]:
+        product = g.db.execute(
+            "SELECT name, sku FROM products WHERE id = ?", (item["product_id"],)
+        ).fetchone()
+        warehouse = g.db.execute(
+            "SELECT name FROM warehouses WHERE id = ?", (item["warehouse_id"],)
+        ).fetchone()
+        fixed_detailed.append({
+            **item,
+            "product_name": product["name"] if product else "—",
+            "product_sku": product["sku"] if product else "—",
+            "warehouse_name": warehouse["name"] if warehouse else "—",
+        })
+
+    return render_template(
+        "wb_reconcile_result.html",
+        checked=report["checked"],
+        skipped_non_digit=report["skipped_non_digit"],
+        errors=report["errors"],
+        fixed=fixed_detailed,
+    )
+
+
+@app.route("/wb-diagnostics/backfill-history", methods=["POST"])
+@login_required
+def wb_diagnostics_backfill_history():
+    """Разовая (можно запускать и повторно) догрузка истории заказов через
+    общий метод WB (`/api/v3/orders`), а не только «новые» (`/orders/new`) —
+    чтобы поймать заказы, отменённые клиентом так быстро, что обычная
+    синхронизация их вообще не успела увидеть (см. диагностику 27.08.2026:
+    так пропало 126 из 131 реальной отмены). Как и разовая сверка, меняет
+    остатки (для найденных активных заказов), поэтому требует подтверждения."""
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("dashboard", error="Недостаточно прав"))
+    confirm_text = request.form.get("confirm_text", "").strip()
+    if confirm_text != "ДОГРУЗИТЬ":
+        return redirect(url_for(
+            "wb_diagnostics_page",
+            error="Для подтверждения нужно ввести слово ДОГРУЗИТЬ (заглавными буквами) — ничего не изменено",
+        ))
+    try:
+        report = backfill_order_history(WBClient())
+    except Exception as e:
+        return redirect(url_for("wb_diagnostics_page", error=f"Не удалось выполнить догрузку: {e}"))
+
+    return render_template("wb_backfill_result.html", **report)
 
 
 def _resolve_location(conn, location_key: str):

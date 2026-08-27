@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS wb_orders (
     warehouse_id INTEGER,
     quantity INTEGER DEFAULT 1,
     status TEXT DEFAULT 'new',
+    -- Статус WB из поля wbStatus (в отличие от status выше, который отражает
+    -- supplierStatus/нашу нормализацию) — хранится отдельно, потому что
+    -- 27.08.2026 выяснилось: клиент может отменить заказ, а supplierStatus
+    -- при этом останется 'new' — реальная отмена видна только тут. См. sync.py.
+    wb_status TEXT,
     price INTEGER,
     order_date TEXT,
     stock_deducted INTEGER DEFAULT 0,
@@ -140,6 +145,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE warehouses ADD COLUMN fulfillment_center_id "
             "INTEGER REFERENCES fulfillment_centers(id)"
         )
+        conn.commit()
+
+    order_cols = {row["name"] for row in conn.execute("PRAGMA table_info(wb_orders)").fetchall()}
+    if "wb_status" not in order_cols:
+        conn.execute("ALTER TABLE wb_orders ADD COLUMN wb_status TEXT")
         conn.commit()
 
 

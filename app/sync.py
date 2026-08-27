@@ -32,11 +32,31 @@ from app.wb_client import WBClient, WBApiError
 
 CANCEL_STATUSES = {"cancel", "canceled", "cancelled", "declined", "reject"}
 
+# Отмену со стороны supplierStatus (выше) видно только если ПРОДАВЕЦ сам что-то
+# сделал с заказом. 27.08.2026 выяснилось на реальных заказах Алёны: если
+# заказ отменяет КЛИЕНТ до того, как продавец успел его подтвердить/собрать,
+# supplierStatus так и остаётся 'new' навсегда — реальная отмена видна только
+# в отдельном поле wbStatus. Именно поэтому 131 реальная отмена в кабинете WB
+# Partners не давала вообще ни одной отмены в этом приложении.
+#
+# Подтверждено реальными данными: "declined_by_client". Остальные значения
+# добавлены по аналогии (документация WB по этому полю нигде не даёт
+# исчерпывающего списка) — если появится ещё не учтённое значение, страница
+# /wb-diagnostics покажет его сырым текстом в колонке wbStatus, и его можно
+# будет дописать сюда.
+WB_STATUS_CANCEL_VALUES = {
+    "declined_by_client", "canceled", "cancelled", "canceled_by_client", "cancelled_by_client",
+}
+
 # Сколько ID заказов отправлять в одном запросе /orders/status. Точный лимит
 # WB не задокументирован нигде, где я могла его проверить, поэтому берём
 # заведомо небольшую пачку — так один слишком большой запрос не может
 # положить всю проверку статусов сразу (см. README про историю багов).
 STATUS_CHECK_BATCH_SIZE = 200
+
+# Защита от бесконечного цикла при догрузке истории заказов (backfill_order_history),
+# если WB когда-нибудь вернёт курсор пагинации, который не двигается с места.
+BACKFILL_MAX_PAGES = 500
 
 
 def get_current_stock(conn: sqlite3.Connection, product_id: int, warehouse_id: int) -> int:
@@ -240,6 +260,24 @@ def _add_movement(conn, product_id, warehouse_id, movement_type, delta, source,
     )
 
 
+def _is_cancelled(supplier_status, wb_status) -> bool:
+    """Отмена — если её видно ЛИБО в supplierStatus (продавец сам отменил/
+    отклонил), ЛИБО в wbStatus (клиент отменил, а supplierStatus мог и не
+    поменяться — см. комментарий у WB_STATUS_CANCEL_VALUES)."""
+    return supplier_status in CANCEL_STATUSES or wb_status in WB_STATUS_CANCEL_VALUES
+
+
+def _parse_order_identity(raw: dict):
+    """Достаёт из сырого объекта заказа WB общие поля — тот же формат что у
+    /orders/new, что и у общего /orders (используется в Этапе 1 обычной
+    синхронизации и в backfill_order_history)."""
+    wb_order_id = str(raw.get("orderId") or raw.get("id"))
+    nm_id = raw.get("nmId")
+    barcode = raw.get("skus", [None])[0] if raw.get("skus") else raw.get("barcode")
+    wb_warehouse_id = raw.get("warehouseId")
+    return wb_order_id, nm_id, barcode, wb_warehouse_id
+
+
 def sync_once(client: WBClient | None = None) -> dict:
     """Один цикл синхронизации. Открывает собственное соединение с БД —
     можно безопасно вызывать и из фонового потока, и из обработчика запроса."""
@@ -341,24 +379,39 @@ def sync_once(client: WBClient | None = None) -> dict:
                 )
                 continue  # эта пачка не удалась — идём дальше, не бросаем всё
 
-            # WB отдаёт статус сборочного задания в поле supplierStatus
-            # (new/confirm/complete/cancel) — поля "status" в ответе нет вообще,
-            # из-за чего смена статуса раньше не замечалась ни разу.
-            status_map = {str(s.get("id")): s.get("supplierStatus") for s in statuses}
+            # WB отдаёт статус сборочного задания сразу в двух полях:
+            # supplierStatus (new/confirm/complete/cancel — управляется
+            # продавцом) и wbStatus (управляется самим WB/клиентом). Раньше
+            # здесь читался только supplierStatus — из-за этого отмены
+            # клиентом, случившиеся до реакции продавца, не были видны вообще
+            # (см. WB_STATUS_CANCEL_VALUES выше и диагностику 27.08.2026).
+            wb_data_map = {str(s.get("id")): s for s in statuses}
 
             for wb_order_id in (str(x) for x in batch_ids):
                 order = tracked_by_wb_id.get(wb_order_id)
                 if not order:
                     continue
-                new_status = status_map.get(wb_order_id)
-                if not new_status or new_status == order["status"]:
+                wb_data = wb_data_map.get(wb_order_id)
+                if not wb_data:
+                    continue
+                supplier_status = wb_data.get("supplierStatus")
+                wb_status = wb_data.get("wbStatus")
+                cancelled_now = _is_cancelled(supplier_status, wb_status)
+
+                # Наш статус: если это отмена (по любому из двух полей WB) —
+                # фиксируем как 'cancel', даже если supplierStatus формально
+                # остался прежним. Иначе — как раньше, отражаем supplierStatus.
+                new_status = "cancel" if cancelled_now else (supplier_status or order["status"])
+                status_changed = new_status != order["status"]
+                wb_status_changed = wb_status != order["wb_status"]
+                if not status_changed and not wb_status_changed:
                     continue
                 conn.execute(
-                    "UPDATE wb_orders SET status = ?, updated_at = ? WHERE id = ?",
-                    (new_status, now_iso(), order["id"]),
+                    "UPDATE wb_orders SET status = ?, wb_status = ?, updated_at = ? WHERE id = ?",
+                    (new_status, wb_status, now_iso(), order["id"]),
                 )
 
-                if new_status in CANCEL_STATUSES and order["stock_deducted"] and order["warehouse_id"]:
+                if cancelled_now and order["stock_deducted"] and order["warehouse_id"]:
                     _add_movement(
                         conn, order["product_id"], order["warehouse_id"], MovementType.SALE_REVERSAL,
                         order["quantity"], MovementSource.WB_SYNC, wb_order_row_id=order["id"],
@@ -395,4 +448,240 @@ def sync_once(client: WBClient | None = None) -> dict:
         "status": overall_status, "orders_fetched": orders_fetched,
         "movements_created": movements_created,
         "message": "\n".join(log_lines) if log_lines else None,
+    }
+
+
+def reconcile_all_orders(client: WBClient | None = None) -> dict:
+    """Разовая (можно запускать и повторно) сверка ВСЕХ заказов в нашей базе
+    с их актуальным статусом в WB — включая уже помеченные 'complete', то
+    есть даже те, что обычный sync_once() больше не трогает вовсе (Этап 2
+    там проверяет только «незавершённые» по нашему status).
+
+    Понадобилась из-за найденной 27.08.2026 ошибки: заказ, отменённый
+    клиентом ДО реакции продавца, у WB остаётся с supplierStatus='new' — то
+    есть по прежней логике выглядел как обычный незавершённый заказ, и его
+    stock_deducted никогда не обнулялся. Эта функция один раз проходит по
+    ВСЕЙ истории заказов и возвращает остаток там, где отмена подтверждается
+    полем wbStatus (см. WB_STATUS_CANCEL_VALUES), но у нас всё ещё числится
+    списание.
+
+    Ничего не отправляет обратно в WB — только читает статусы и, где нужно,
+    добавляет движение-возврат в НАШЕЙ базе (как обычная отмена при
+    синхронизации). Безопасно запускать повторно: уже возвращённые заказы
+    (stock_deducted уже 0) при повторном обнаружении отмены не трогаются
+    второй раз, обновляются только их status/wb_status.
+    """
+    client = client or WBClient()
+    conn = get_conn()
+
+    all_orders = conn.execute("SELECT * FROM wb_orders").fetchall()
+    numeric_orders = [o for o in all_orders if str(o["wb_order_id"]).isdigit()]
+    skipped_non_digit = len(all_orders) - len(numeric_orders)
+    by_wb_id = {o["wb_order_id"]: o for o in numeric_orders}
+    ids = [int(o["wb_order_id"]) for o in numeric_orders]
+
+    checked = 0
+    fixed = []
+    errors = []
+
+    try:
+        for batch_start in range(0, len(ids), STATUS_CHECK_BATCH_SIZE):
+            batch_ids = ids[batch_start:batch_start + STATUS_CHECK_BATCH_SIZE]
+            try:
+                statuses = client.get_orders_status(batch_ids)
+            except WBApiError as e:
+                errors.append(
+                    f"Пачка {batch_start + 1}–{batch_start + len(batch_ids)} из {len(ids)}: {e}"
+                )
+                continue
+
+            wb_data_map = {str(s.get("id")): s for s in statuses}
+
+            for wb_order_id in (str(x) for x in batch_ids):
+                order = by_wb_id.get(wb_order_id)
+                if not order:
+                    continue
+                wb_data = wb_data_map.get(wb_order_id)
+                if not wb_data:
+                    continue
+                checked += 1
+                supplier_status = wb_data.get("supplierStatus")
+                wb_status = wb_data.get("wbStatus")
+                cancelled_now = _is_cancelled(supplier_status, wb_status)
+
+                new_status = "cancel" if cancelled_now else (supplier_status or order["status"])
+                needs_update = new_status != order["status"] or wb_status != order["wb_status"]
+
+                reversed_now = False
+                if cancelled_now and order["stock_deducted"] and order["warehouse_id"]:
+                    _add_movement(
+                        conn, order["product_id"], order["warehouse_id"], MovementType.SALE_REVERSAL,
+                        order["quantity"], MovementSource.WB_SYNC, wb_order_row_id=order["id"],
+                        comment=f"Отмена заказа WB {order['wb_order_id']} (найдено разовой сверкой)",
+                    )
+                    conn.execute("UPDATE wb_orders SET stock_deducted = 0 WHERE id = ?", (order["id"],))
+                    reversed_now = True
+
+                if needs_update or reversed_now:
+                    conn.execute(
+                        "UPDATE wb_orders SET status = ?, wb_status = ?, updated_at = ? WHERE id = ?",
+                        (new_status, wb_status, now_iso(), order["id"]),
+                    )
+
+                if reversed_now:
+                    fixed.append({
+                        "wb_order_id": order["wb_order_id"],
+                        "product_id": order["product_id"],
+                        "warehouse_id": order["warehouse_id"],
+                        "quantity": order["quantity"],
+                        "old_status": order["status"],
+                        "wb_status": wb_status,
+                    })
+            conn.commit()  # фиксируем прогресс после каждой пачки, как и в sync_once
+    finally:
+        conn.close()
+
+    return {
+        "checked": checked,
+        "skipped_non_digit": skipped_non_digit,
+        "fixed": fixed,
+        "errors": errors,
+    }
+
+
+def backfill_order_history(client: WBClient | None = None) -> dict:
+    """Догружает историю заказов через общий метод WB — `/api/v3/orders`
+    (все заказы продавца, постранично), в отличие от `/orders/new`, который
+    отдаёт только «ещё не взятые в работу». Нужна из-за находки 27.08.2026:
+    заказ, отменённый клиентом быстрее, чем раз в SYNC_INTERVAL_MINUTES,
+    успевает пропасть из «новых» ещё до того, как обычная синхронизация его
+    увидит — на реальных 131 отмене Алёны так пропало 126 (96%), их не было
+    в нашей базе вообще ни в каком виде.
+
+    Для каждого найденного в общем списке заказа, которого ещё нет в нашей
+    базе, сразу проверяется его АКТУАЛЬНЫЙ статус (supplierStatus/wbStatus,
+    та же логика, что и в остальном коде):
+      - если заказ уже отменён — просто фиксируется как отменённый, остаток
+        не трогается вообще (раз заказ отменили — считаем, что его как бы
+        не было: списывать и сразу же возвращать бессмысленно);
+      - если заказ активный/выполнен — списывается остаток, ровно как это
+        сделала бы обычная синхронизация, если бы увидела заказ вовремя.
+
+    Безопасно запускать повторно (и после обрыва на середине, например по
+    таймауту): уже известные заказы просто пропускаются, прогресс
+    сохраняется постранично (commit после каждой страницы).
+    """
+    client = client or WBClient()
+    conn = get_conn()
+
+    discovered = 0
+    added_active = 0
+    added_cancelled = 0
+    skipped_no_warehouse = 0
+    errors = []
+
+    try:
+        cursor = 0
+        for page_num in range(BACKFILL_MAX_PAGES):
+            try:
+                page = client.get_orders(limit=1000, next_cursor=cursor)
+            except WBApiError as e:
+                errors.append(f"Страница {page_num + 1} (next={cursor}): {e}")
+                break
+
+            page_orders = page.get("orders", [])
+            if not page_orders:
+                break
+
+            # Отбираем только то, чего у нас ещё нет — остальное уже видели
+            # либо обычной синхронизацией, либо предыдущим запуском этой же догрузки.
+            new_by_wb_id = {}
+            for raw in page_orders:
+                wb_order_id, *_ = _parse_order_identity(raw)
+                if not wb_order_id or wb_order_id == "None":
+                    continue
+                if wb_order_id in new_by_wb_id:
+                    continue  # дубль внутри той же страницы ответа WB
+                existing = conn.execute(
+                    "SELECT id FROM wb_orders WHERE wb_order_id = ?", (wb_order_id,)
+                ).fetchone()
+                if existing:
+                    continue
+                new_by_wb_id[wb_order_id] = raw
+
+            discovered += len(new_by_wb_id)
+
+            if new_by_wb_id:
+                numeric_ids = [int(wb_id) for wb_id in new_by_wb_id if wb_id.isdigit()]
+                wb_status_by_id = {}
+                for batch_start in range(0, len(numeric_ids), STATUS_CHECK_BATCH_SIZE):
+                    batch_ids = numeric_ids[batch_start:batch_start + STATUS_CHECK_BATCH_SIZE]
+                    try:
+                        statuses = client.get_orders_status(batch_ids)
+                        for s in statuses:
+                            wb_status_by_id[str(s.get("id"))] = s
+                    except WBApiError as e:
+                        errors.append(f"Статусы новых заказов (страница {page_num + 1}): {e}")
+
+                for wb_order_id, raw in new_by_wb_id.items():
+                    _, nm_id, barcode, wb_warehouse_id = _parse_order_identity(raw)
+                    quantity = 1
+                    wb_data = wb_status_by_id.get(wb_order_id)
+                    supplier_status = wb_data.get("supplierStatus") if wb_data else None
+                    wb_status = wb_data.get("wbStatus") if wb_data else None
+                    cancelled = _is_cancelled(supplier_status, wb_status)
+
+                    product_id = _find_or_create_product(conn, nm_id, barcode, name_hint=str(nm_id or barcode))
+                    warehouse = _find_warehouse_by_wb_id(conn, wb_warehouse_id)
+
+                    if cancelled:
+                        status, stock_deducted = "cancel", 0
+                    else:
+                        status, stock_deducted = (supplier_status or "new"), (1 if warehouse else 0)
+
+                    order_cur = conn.execute(
+                        """INSERT INTO wb_orders
+                           (wb_order_id, nm_id, barcode, wb_warehouse_id, product_id, warehouse_id,
+                            quantity, status, wb_status, order_date, stock_deducted, raw_json,
+                            created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (wb_order_id, nm_id, barcode, wb_warehouse_id, product_id,
+                         warehouse["id"] if warehouse else None, quantity, status, wb_status,
+                         now_iso(), stock_deducted, json.dumps(raw, ensure_ascii=False),
+                         now_iso(), now_iso()),
+                    )
+                    order_row_id = order_cur.lastrowid
+
+                    if cancelled:
+                        added_cancelled += 1
+                    elif warehouse:
+                        _add_movement(
+                            conn, product_id, warehouse["id"], MovementType.SALE, -quantity,
+                            MovementSource.WB_SYNC, wb_order_row_id=order_row_id,
+                            comment=f"Заказ WB {wb_order_id} (найден догрузкой истории)",
+                        )
+                        added_active += 1
+                    else:
+                        skipped_no_warehouse += 1
+
+                conn.commit()  # фиксируем прогресс после каждой страницы — можно спокойно прерваться
+
+            next_cursor = page.get("next")
+            if next_cursor is None or next_cursor == cursor:
+                break
+            cursor = next_cursor
+        else:
+            errors.append(
+                f"Достигнут предел в {BACKFILL_MAX_PAGES} страниц — возможно, догрузили не всю "
+                f"историю, можно безопасно запустить ещё раз."
+            )
+    finally:
+        conn.close()
+
+    return {
+        "discovered": discovered,
+        "added_active": added_active,
+        "added_cancelled": added_cancelled,
+        "skipped_no_warehouse": skipped_no_warehouse,
+        "errors": errors,
     }

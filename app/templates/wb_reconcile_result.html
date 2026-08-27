@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Результат сверки с WB{% endblock %}
+{% block content %}
+<h1>Результат разовой сверки заказов с WB</h1>
+
+<div class="card">
+  <p>Проверено заказов (по которым WB что-то ответил): <b>{{ checked }}</b></p>
+  {% if skipped_non_digit %}
+  <p class="muted">Пропущено заказов с нечисловым ID (WB не может их проверить): {{ skipped_non_digit }}</p>
+  {% endif %}
+  {% if errors %}
+  <p class="flash error">
+    Не все пачки удалось проверить — часть заказов, возможно, стоит пересверить позже:
+    <br>{{ errors | join('<br>') | safe }}
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  {% if fixed %}
+  <h2>Возвращён остаток по {{ fixed | length }} заказ{{ 'у' if fixed | length == 1 else 'ам' }}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID заказа WB</th>
+        <th>Товар</th>
+        <th>Склад</th>
+        <th>Возвращено</th>
+        <th>Статус WB (wbStatus)</th>
+        <th>Наш статус до сверки</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in fixed %}
+      <tr>
+        <td>{{ f.wb_order_id }}</td>
+        <td>{{ f.product_name }} <span class="muted">({{ f.product_sku }})</span></td>
+        <td>{{ f.warehouse_name }}</td>
+        <td class="qty-negative" style="color: var(--ok);">+{{ f.quantity }}</td>
+        <td>{{ f.wb_status }}</td>
+        <td>{{ f.old_status }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">
+    Эти движения также видны на странице «Заказы WB» с пометкой «отмена» и в «Аналитике» —
+    отменённых теперь должно стать больше.
+  </p>
+  {% else %}
+  <p class="muted">
+    Расхождений не найдено — по всем проверенным заказам наш учёт совпадает с актуальным статусом WB.
+  </p>
+  {% endif %}
+</div>
+
+<p><a href="/wb-diagnostics">← Вернуться к диагностике</a></p>
+{% endblock %}
