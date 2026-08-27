@@ -1,17 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Остатки{% endblock %}
 {% block content %}
-<h1>Остатки по ФФ и складам</h1>
+<h1>Остатки по ФФ</h1>
 
 <div class="card">
   <h2>Синхронизация с WB</h2>
   {% if last_run %}
+    {% set pill_class = 'ok' if last_run.status == 'success' else ('warning' if last_run.status == 'warning' else ('error' if last_run.status == 'error' else 'running')) %}
     <p>
       Последний запуск: {{ last_run.finished_at | dtfmt }}
-      <span class="pill {{ 'ok' if last_run.status == 'success' else ('error' if last_run.status == 'error' else 'running') }}">{{ last_run.status }}</span>
+      <span class="pill {{ pill_class }}">{{ last_run.status }}</span>
       — заказов получено: {{ last_run.orders_fetched }}, движений создано: {{ last_run.movements_created }}
     </p>
-    {% if last_run.message %}<p class="muted">{{ last_run.message }}</p>{% endif %}
+    {% if last_run.message %}
+      <p class="flash {{ 'error' if last_run.status == 'error' else ('warning' if last_run.status == 'warning' else '') }}" style="{{ '' if last_run.status in ['error', 'warning'] else 'background:none; border:none; color:var(--muted); padding:0; font-size:13px;' }}">{{ last_run.message }}</p>
+    {% endif %}
   {% else %}
     <p class="muted">Синхронизация ещё ни разу не запускалась.</p>
   {% endif %}
@@ -47,29 +50,13 @@
     </div>
 
     <div class="stat-grid">
-      {% for wt in group.warehouse_totals %}
-      <div class="stat-tile {{ 'negative' if wt.quantity < 0 else ('zero' if wt.quantity == 0 else 'positive') }}">
-        <div class="stat-label">{{ wt.warehouse_name }}</div>
-        <div class="stat-value">{{ wt.quantity }}</div>
+      {% for t in group.totals %}
+      <div class="stat-tile {{ 'negative' if t.quantity < 0 else ('zero' if t.quantity == 0 else 'positive') }}">
+        <div class="stat-label">{{ t.name }} <span class="stat-sku">({{ t.sku }})</span></div>
+        <div class="stat-value">{{ t.quantity }}</div>
       </div>
       {% endfor %}
     </div>
-
-    <details class="detail-table" style="margin-top:16px;">
-      <summary>Подробно по товарам внутри «{{ group.ff_name }}»</summary>
-      <table>
-        <thead><tr><th>Товар</th><th>Склад</th><th>Остаток</th></tr></thead>
-        <tbody>
-          {% for row in group.rows %}
-          <tr>
-            <td>{{ row.product_name }} <span class="muted">({{ row.sku }})</span></td>
-            <td>{{ row.warehouse_name }}</td>
-            <td class="{{ 'qty-negative' if row.quantity < 0 else ('qty-zero' if row.quantity == 0 else '') }}">{{ row.quantity }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </details>
   </div>
   {% endfor %}
 {% else %}

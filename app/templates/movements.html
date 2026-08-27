@@ -12,9 +12,9 @@
         {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
       </select>
     </div>
-    <div><label>Склад</label>
-      <select name="warehouse_id" required>
-        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+    <div><label>Куда (ФФ или склад)</label>
+      <select name="location" required>
+        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
       </select>
     </div>
     <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
@@ -24,7 +24,11 @@
 </div>
 
 <div class="card">
-  <h2>Перемещение между складами</h2>
+  <h2>Перемещение между ФФ/складами</h2>
+  <p class="muted">
+    Перемещение — это когда товар физически едет из одного места в другое. Между виртуальными
+    складами внутри одного и того же ФФ перемещать нечего — это и так одно физическое место.
+  </p>
   <form class="inline" method="post" action="/movements/transfer">
     <div><label>Товар</label>
       <select name="product_id" required>
@@ -32,13 +36,13 @@
       </select>
     </div>
     <div><label>Откуда</label>
-      <select name="from_warehouse_id" required>
-        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+      <select name="from_location" required>
+        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
       </select>
     </div>
     <div><label>Куда</label>
-      <select name="to_warehouse_id" required>
-        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+      <select name="to_location" required>
+        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
       </select>
     </div>
     <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
@@ -55,9 +59,9 @@
         {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
       </select>
     </div>
-    <div><label>Склад</label>
-      <select name="warehouse_id" required>
-        {% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}
+    <div><label>Откуда (ФФ или склад)</label>
+      <select name="location" required>
+        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
       </select>
     </div>
     <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>

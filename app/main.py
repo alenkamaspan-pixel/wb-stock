@@ -12,7 +12,10 @@ from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL
 from app.database import get_conn, init_db, now_iso
 from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
-from app.sync import sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock
+from app.sync import (
+    sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock,
+    get_stock_locations,
+)
 from app.wb_client import WBClient, WBApiError
 from app.analytics import (
     get_period_stats, get_daily_series, get_velocity_table, get_product_ranking,
@@ -182,6 +185,9 @@ def analytics_export_csv():
 @app.route("/movements")
 @login_required
 def movements_page():
+    # Только ручные операции (приход/списание/перемещение) — заказы и отмены
+    # WB здесь больше не показываются, чтобы не путать ручные операции с
+    # автоматическими; для них есть отдельный раздел «Заказы WB».
     movements = g.db.execute(
         """
         SELECT m.*, p.name AS product_name, w.name AS warehouse_name,
@@ -191,19 +197,51 @@ def movements_page():
         LEFT JOIN warehouses w ON w.id = m.warehouse_id
         LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
         LEFT JOIN users u ON u.id = m.created_by_id
+        WHERE m.source = 'manual'
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT 300
         """
     ).fetchall()
     products = g.db.execute("SELECT * FROM products ORDER BY name").fetchall()
-    warehouses = g.db.execute(
-        "SELECT * FROM warehouses WHERE is_active = 1 ORDER BY name"
-    ).fetchall()
+    locations = get_stock_locations(g.db)
     user = get_current_user()
     return render_template(
         "movements.html", movements=movements, products=products,
-        warehouses=warehouses, can_edit=can_edit(user),
+        locations=locations, can_edit=can_edit(user),
     )
+
+
+@app.route("/wb-orders-log")
+@login_required
+def wb_orders_log_page():
+    """Отдельный раздел: только события по заказам WB (списание при новом
+    заказе, возврат при отмене) — какой склад/ФФ и когда. Живёт отдельно от
+    «Движений», чтобы не путать автоматические события WB с ручными
+    операциями (приход/перемещение/списание)."""
+    events = g.db.execute(
+        """
+        SELECT m.*, p.name AS product_name, p.sku AS product_sku,
+               w.name AS warehouse_name, f.id AS ff_id, f.name AS ff_name
+        FROM stock_movements m
+        LEFT JOIN products p ON p.id = m.product_id
+        LEFT JOIN warehouses w ON w.id = m.warehouse_id
+        LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
+        WHERE m.source = 'wb_sync'
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT 300
+        """
+    ).fetchall()
+    return render_template("wb_orders_log.html", events=events)
+
+
+def _resolve_location(conn, location_key: str):
+    """'ff:3' / 'wh:5' -> id канонического склада для записи движения.
+    Один физический ФФ — одно место хранения, поэтому в формах выбирается
+    ФФ целиком, а не конкретный виртуальный склад WB внутри него."""
+    for loc in get_stock_locations(conn):
+        if loc["key"] == location_key:
+            return loc["warehouse_id"]
+    return None
 
 
 @app.route("/movements/income", methods=["POST"])
@@ -213,7 +251,9 @@ def movement_income():
     if not can_edit(user):
         return redirect(url_for("movements_page", error="Недостаточно прав"))
     product_id = int(request.form["product_id"])
-    warehouse_id = int(request.form["warehouse_id"])
+    warehouse_id = _resolve_location(g.db, request.form["location"])
+    if warehouse_id is None:
+        return redirect(url_for("movements_page", error="Выбранное место хранения не найдено"))
     quantity = int(request.form["quantity"])
     comment = request.form.get("comment") or None
     g.db.execute(
@@ -234,7 +274,9 @@ def movement_writeoff():
     if not can_edit(user):
         return redirect(url_for("movements_page", error="Недостаточно прав"))
     product_id = int(request.form["product_id"])
-    warehouse_id = int(request.form["warehouse_id"])
+    warehouse_id = _resolve_location(g.db, request.form["location"])
+    if warehouse_id is None:
+        return redirect(url_for("movements_page", error="Выбранное место хранения не найдено"))
     quantity = abs(int(request.form["quantity"]))
     comment = request.form["comment"]
     g.db.execute(
@@ -255,13 +297,18 @@ def movement_transfer():
     if not can_edit(user):
         return redirect(url_for("movements_page", error="Недостаточно прав"))
     product_id = int(request.form["product_id"])
-    from_warehouse_id = int(request.form["from_warehouse_id"])
-    to_warehouse_id = int(request.form["to_warehouse_id"])
+    from_location = request.form["from_location"]
+    to_location = request.form["to_location"]
     quantity = abs(int(request.form["quantity"]))
     comment = request.form.get("comment") or None
 
-    if from_warehouse_id == to_warehouse_id:
-        return redirect(url_for("movements_page", error="Склады отправления и назначения совпадают"))
+    if from_location == to_location:
+        return redirect(url_for("movements_page", error="Место отправления и назначения совпадают"))
+
+    from_warehouse_id = _resolve_location(g.db, from_location)
+    to_warehouse_id = _resolve_location(g.db, to_location)
+    if from_warehouse_id is None or to_warehouse_id is None:
+        return redirect(url_for("movements_page", error="Выбранное место хранения не найдено"))
 
     out_cur = g.db.execute(
         """INSERT INTO stock_movements

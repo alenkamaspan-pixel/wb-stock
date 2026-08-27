@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Заказы WB{% endblock %}
+{% block content %}
+<h1>Заказы WB</h1>
+<p class="muted">
+  Только события, которые приложение получило автоматически от WB: новый заказ (списание остатка) и
+  отмена заказа (возврат остатка) — с указанием, с какого именно склада WB и когда. Ручные операции
+  (приход, перемещение, списание) сюда не попадают — они на странице «Движения».
+</p>
+
+<div class="card">
+  {% if events %}
+  <table>
+    <thead><tr><th>Дата</th><th>Событие</th><th>Товар</th><th>Склад</th><th>ФФ</th><th>Кол-во</th><th>Комментарий</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td>{{ e.created_at | dtfmt }}</td>
+        <td>
+          {% if e.movement_type == 'sale' %}
+          <span class="pill error">заказ</span>
+          {% elif e.movement_type == 'sale_reversal' %}
+          <span class="pill ok">отмена</span>
+          {% else %}{{ e.movement_type }}{% endif %}
+        </td>
+        <td>{{ e.product_name or '—' }} <span class="muted">({{ e.product_sku or '—' }})</span></td>
+        <td>{{ e.warehouse_name or '—' }}</td>
+        <td>
+          {% if e.ff_name %}
+          {% set ff_color = 'ff-color-' ~ (e.ff_id % 6) %}
+          <span class="ff-tag {{ ff_color }}">{{ e.ff_name }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="{{ 'qty-negative' if e.delta < 0 else '' }}">{{ '+' if e.delta > 0 else '' }}{{ e.delta }}</td>
+        <td class="muted">{{ e.comment or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Показаны последние 300 событий.</p>
+  {% else %}
+  <p class="muted">Пока нет ни одного заказа или отмены от WB.</p>
+  {% endif %}
+</div>
+{% endblock %}

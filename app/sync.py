@@ -32,6 +32,12 @@ from app.wb_client import WBClient, WBApiError
 
 CANCEL_STATUSES = {"cancel", "canceled", "cancelled", "declined", "reject"}
 
+# Сколько ID заказов отправлять в одном запросе /orders/status. Точный лимит
+# WB не задокументирован нигде, где я могла его проверить, поэтому берём
+# заведомо небольшую пачку — так один слишком большой запрос не может
+# положить всю проверку статусов сразу (см. README про историю багов).
+STATUS_CHECK_BATCH_SIZE = 200
+
 
 def get_current_stock(conn: sqlite3.Connection, product_id: int, warehouse_id: int) -> int:
     row = conn.execute(
@@ -77,11 +83,15 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
     """Остатки, сгруппированные по фулфилмент-центрам — для дашборда и для
     раздела «Остатки на дату» в аналитике.
 
-    Один ФФ (физический склад-партнёр) может обслуживать сразу несколько
-    складов WB (регионов). Списание по заказу по-прежнему идёт с конкретного
-    склада WB (это не меняется), а здесь мы отдельно считаем сумму по всем
-    складам, привязанным к одному ФФ — это только витрина, без своей
-    бухгалтерии движений.
+    Важно: ФФ здесь — это единственный физический уровень, на котором
+    остаток вообще что-то значит. Склады WB внутри одного ФФ — виртуальные
+    ярлыки самого WB для маршрутизации заказов, физически весь товар лежит
+    в одном месте (см. обсуждение с Алёной 2026-08-26). Поэтому здесь
+    намеренно НЕТ разбивки по складам внутри ФФ — только итог по ФФ и по
+    товару внутри него. Списание по конкретному заказу по-прежнему
+    учитывается через конкретный склад WB (это нужно для сопоставления
+    заказов), но как только дело доходит до отображения остатка — всё
+    сворачивается на уровень ФФ.
 
     as_of: дата в формате YYYY-MM-DD (московское время, конец дня) — если
     указана, считает остаток НЕ на сейчас, а на конец этого дня (сумма всех
@@ -89,14 +99,13 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
     остаток на сейчас, как и раньше.
 
     Возвращает список групп в порядке: сначала привязанные ФФ (по алфавиту),
-    в конце — склады без привязки к ФФ, единой группой. Каждая группа:
+    в конце — склады без привязки к ФФ (это самостоятельные физические
+    места, каждый — своя группа). Каждая группа:
       {
         "ff_id": int | None,
         "ff_name": str,
         "ff_total": int,                  # сумма по ВСЕМ товарам сразу в рамках ФФ
-        "rows": [sqlite3.Row, ...],        # детальная разбивка: товар × склад
         "totals": [{"product_id", "sku", "name", "quantity"}, ...],  # итого по товару
-        "warehouse_totals": [{"warehouse_id", "warehouse_name", "quantity"}, ...],  # итого по складу (все товары)
       }
     """
     where_clause = ""
@@ -109,7 +118,6 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
     flat = conn.execute(
         f"""
         SELECT p.id AS product_id, p.sku, p.name AS product_name,
-               w.id AS warehouse_id, w.name AS warehouse_name,
                f.id AS ff_id, f.name AS ff_name,
                COALESCE(SUM(m.delta), 0) AS quantity
         FROM stock_movements m
@@ -117,8 +125,8 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
         JOIN warehouses w ON w.id = m.warehouse_id
         LEFT JOIN fulfillment_centers f ON f.id = w.fulfillment_center_id
         {where_clause}
-        GROUP BY p.id, w.id
-        ORDER BY (f.name IS NULL), f.name, p.name, w.name
+        GROUP BY p.id, f.id
+        ORDER BY (f.name IS NULL), f.name, p.name
         """,
         params,
     ).fetchall()
@@ -126,19 +134,15 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
     groups: dict = {}
     order: list = []
     for row in flat:
-        key = row["ff_id"]  # None — склад без привязки к ФФ
+        key = row["ff_id"]  # None — склад(ы) без привязки к ФФ
         if key not in groups:
             groups[key] = {
                 "ff_id": key,
                 "ff_name": row["ff_name"] or "Без ФФ (внутренние или ещё не привязанные склады)",
-                "rows": [],
                 "_totals_map": {},
-                "_warehouse_totals_map": {},
             }
             order.append(key)
         group = groups[key]
-        group["rows"].append(row)
-
         totals_map = group["_totals_map"]
         if row["product_id"] not in totals_map:
             totals_map[row["product_id"]] = {
@@ -147,25 +151,53 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
             }
         totals_map[row["product_id"]]["quantity"] += row["quantity"]
 
-        wh_totals = group["_warehouse_totals_map"]
-        if row["warehouse_id"] not in wh_totals:
-            wh_totals[row["warehouse_id"]] = {
-                "warehouse_id": row["warehouse_id"], "warehouse_name": row["warehouse_name"],
-                "quantity": 0,
-            }
-        wh_totals[row["warehouse_id"]]["quantity"] += row["quantity"]
-
     result = []
     for key in order:
         group = groups[key]
         group["totals"] = sorted(group["_totals_map"].values(), key=lambda t: t["name"])
-        group["warehouse_totals"] = sorted(
-            group["_warehouse_totals_map"].values(), key=lambda w: w["warehouse_name"]
-        )
         group["ff_total"] = sum(t["quantity"] for t in group["totals"])
         del group["_totals_map"]
-        del group["_warehouse_totals_map"]
         result.append(group)
+    return result
+
+
+def get_stock_locations(conn: sqlite3.Connection) -> list[dict]:
+    """Единый список мест хранения для форм прихода/списания/перемещения.
+
+    Один физический ФФ — это ОДНО место, даже если внутри него несколько
+    виртуальных складов WB — поэтому в формах выбирается ФФ целиком, а не
+    конкретный склад внутри него. Под капотом движение по-прежнему пишется
+    против конкретной строки warehouses (это требование схемы и нужно для
+    заказов WB), но для ФФ мы всегда берём один и тот же «канонический»
+    склад этого ФФ — какой именно, пользователю не нужно ни видеть, ни
+    выбирать, потому что физически это всё равно одно и то же место.
+
+    Склады без привязки к ФФ — самостоятельные физические места, показаны
+    как есть, по одному.
+    """
+    result = []
+    ffs = conn.execute(
+        "SELECT * FROM fulfillment_centers WHERE is_active = 1 ORDER BY name"
+    ).fetchall()
+    for ff in ffs:
+        canonical = conn.execute(
+            "SELECT id FROM warehouses WHERE fulfillment_center_id = ? AND is_active = 1 "
+            "ORDER BY id LIMIT 1",
+            (ff["id"],),
+        ).fetchone()
+        if canonical:
+            result.append({
+                "key": f"ff:{ff['id']}", "label": f"ФФ «{ff['name']}»",
+                "warehouse_id": canonical["id"], "ff_id": ff["id"],
+            })
+    standalone = conn.execute(
+        "SELECT * FROM warehouses WHERE is_active = 1 AND fulfillment_center_id IS NULL ORDER BY name"
+    ).fetchall()
+    for w in standalone:
+        result.append({
+            "key": f"wh:{w['id']}", "label": w["name"],
+            "warehouse_id": w["id"], "ff_id": None,
+        })
     return result
 
 
@@ -225,8 +257,15 @@ def sync_once(client: WBClient | None = None) -> dict:
     orders_fetched = 0
     movements_created = 0
 
+    # ------------------------------------------------------------- Этап 1
+    # Новые заказы -> сразу списываем остаток. Всё-или-ничего В ПРЕДЕЛАХ
+    # этого этапа (если что-то пошло не так на середине — откатываем только
+    # его), но НЕЗАВИСИМО от этапа 2: раньше оба этапа были одной большой
+    # транзакцией, и сбой при проверке статусов (этап 2) откатывал уже
+    # обработанные новые заказы тоже — этим объяснялись случаи, когда после
+    # синхронизации "заказов получено" росло, а по факту ничего не менялось.
+    stage1_failed = False
     try:
-        # 1. Новые заказы -> сразу списываем остаток
         new_orders = client.get_new_orders()
         orders_fetched = len(new_orders)
 
@@ -269,22 +308,49 @@ def sync_once(client: WBClient | None = None) -> dict:
                     f"Заказ {wb_order_id}: склад WB id={wb_warehouse_id} не сопоставлен ни с одним "
                     f"вашим складом — остаток не списан, добавьте склад на странице «Склады»."
                 )
+        conn.commit()
+    except WBApiError as e:
+        conn.rollback()
+        stage1_failed = True
+        log_lines.append(f"Не удалось получить новые заказы: {e}")
 
-        # 2. Обновляем статусы незавершённых заказов, реагируем на отмены
+    # ------------------------------------------------------------- Этап 2
+    # Обновляем статусы отслеживаемых заказов, реагируем на отмены — пачками,
+    # а не всеми заказами разом: пока определение статуса было сломано (см.
+    # README/историю), почти все заказы за всё время застряли в статусе
+    # "new", и один огромный запрос на все сразу мог упираться в лимиты WB и
+    # рушить всю проверку. Сбой одной пачки не должен мешать остальным.
+    stage2_had_errors = False
+    try:
         tracked = conn.execute(
             "SELECT * FROM wb_orders WHERE status NOT IN ('complete', 'cancel', 'canceled', "
             "'cancelled', 'declined', 'reject')"
         ).fetchall()
-        if tracked:
-            ids = [int(o["wb_order_id"]) for o in tracked if str(o["wb_order_id"]).isdigit()]
-            statuses = client.get_orders_status(ids) if ids else []
+        tracked_by_wb_id = {o["wb_order_id"]: o for o in tracked}
+        ids = [int(o["wb_order_id"]) for o in tracked if str(o["wb_order_id"]).isdigit()]
+
+        for batch_start in range(0, len(ids), STATUS_CHECK_BATCH_SIZE):
+            batch_ids = ids[batch_start:batch_start + STATUS_CHECK_BATCH_SIZE]
+            try:
+                statuses = client.get_orders_status(batch_ids)
+            except WBApiError as e:
+                stage2_had_errors = True
+                log_lines.append(
+                    f"Не удалось проверить статусы пачки заказов "
+                    f"({batch_start + 1}–{batch_start + len(batch_ids)} из {len(ids)}): {e}"
+                )
+                continue  # эта пачка не удалась — идём дальше, не бросаем всё
+
             # WB отдаёт статус сборочного задания в поле supplierStatus
             # (new/confirm/complete/cancel) — поля "status" в ответе нет вообще,
             # из-за чего смена статуса раньше не замечалась ни разу.
             status_map = {str(s.get("id")): s.get("supplierStatus") for s in statuses}
 
-            for order in tracked:
-                new_status = status_map.get(order["wb_order_id"])
+            for wb_order_id in (str(x) for x in batch_ids):
+                order = tracked_by_wb_id.get(wb_order_id)
+                if not order:
+                    continue
+                new_status = status_map.get(wb_order_id)
                 if not new_status or new_status == order["status"]:
                     continue
                 conn.execute(
@@ -300,30 +366,33 @@ def sync_once(client: WBClient | None = None) -> dict:
                     )
                     conn.execute("UPDATE wb_orders SET stock_deducted = 0 WHERE id = ?", (order["id"],))
                     movements_created += 1
-
-    except WBApiError as e:
-        # Откатываем все несохранённые движения/товары из этой попытки — синк
-        # должен быть «всё или ничего», чтобы не оставлять половинчатых списаний.
+            conn.commit()  # фиксируем прогресс после каждой пачки — сбой следующей не откатит эту
+    except Exception as e:
+        # Непредвиденная (не WBApiError) ошибка на этапе статусов — не должна
+        # ронять всю синхронизацию целиком, только эту часть.
         conn.rollback()
-        conn.execute(
-            "UPDATE sync_runs SET status = 'error', message = ?, finished_at = ? WHERE id = ?",
-            (str(e), now_iso(), run_id),
-        )
-        conn.commit()
-        conn.close()
-        return {"status": "error", "message": str(e)}
+        stage2_had_errors = True
+        log_lines.append(f"Непредвиденная ошибка при проверке статусов заказов: {e}")
+
+    if stage1_failed:
+        overall_status = "error"
+    elif stage2_had_errors:
+        overall_status = "warning"
+    else:
+        overall_status = "success"
 
     conn.execute(
         """UPDATE sync_runs
-           SET status = 'success', orders_fetched = ?, movements_created = ?,
+           SET status = ?, orders_fetched = ?, movements_created = ?,
                message = ?, finished_at = ?
            WHERE id = ?""",
-        (orders_fetched, movements_created,
+        (overall_status, orders_fetched, movements_created,
          "\n".join(log_lines) if log_lines else None, now_iso(), run_id),
     )
     conn.commit()
     conn.close()
     return {
-        "status": "success", "orders_fetched": orders_fetched,
+        "status": overall_status, "orders_fetched": orders_fetched,
         "movements_created": movements_created,
+        "message": "\n".join(log_lines) if log_lines else None,
     }
