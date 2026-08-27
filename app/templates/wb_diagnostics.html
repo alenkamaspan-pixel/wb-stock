@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Диагностика WB{% endblock %}
+{% block content %}
+<h1>Диагностика синхронизации с WB</h1>
+<p class="muted">
+  Только чтение — ничего не меняет ни в нашей базе, ни тем более в WB. Собирает в одном месте все
+  версии того, почему реальные отмены заказов (см. кабинет WB Partners) могут не долетать до
+  приложения, чтобы проверить их за один раз, а не по одной через скриншоты.
+</p>
+
+<div class="card">
+  <h2>1. Точечная проверка конкретных заказов</h2>
+  <p class="muted">
+    Вставьте сюда ID заказов прямо из кабинета WB Partners (например, из вкладки «Отменённые») — через
+    пробел или запятую. Приложение спросит у WB актуальный статус по каждому и покажет ответ
+    <b>целиком</b>, каждое поле, а не только то, что мы обычно читаем (<code>supplierStatus</code>) — так
+    сразу видно, если у WB есть отдельное поле вроде <code>wbStatus</code>, которое мы сейчас нигде не
+    используем.
+  </p>
+  <form method="get" action="/wb-diagnostics" style="margin-bottom: 16px;">
+    <input
+      type="text" name="order_ids" value="{{ order_ids_raw }}"
+      placeholder="например: 5601809825 5596143804 5595255454"
+      style="width: 420px; max-width: 100%;"
+    >
+    <button type="submit">Проверить</button>
+  </form>
+
+  {% if probe_error %}
+  <p class="flash error">Ошибка запроса к WB: {{ probe_error }}</p>
+  {% endif %}
+
+  {% if probe_results %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID заказа</th>
+        <th>Ответ WB содержит этот ID?</th>
+        <th>Есть в нашей базе?</th>
+        <th>Наш статус</th>
+        <th>Склад привязан?</th>
+        <th>Списание проведено?</th>
+        <th>Сырой ответ WB (все поля)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in probe_results %}
+      <tr>
+        <td>{{ r.order_id }}</td>
+        <td>
+          {% if r.found_in_wb_response %}<span class="pill ok">да</span>
+          {% else %}<span class="pill error">нет</span>{% endif %}
+        </td>
+        <td>
+          {% if r.in_our_db %}<span class="pill ok">да</span>
+          {% else %}<span class="pill error">нет — WB о нём знает, а мы нет</span>{% endif %}
+        </td>
+        <td>{{ r.local_status or '—' }}</td>
+        <td>
+          {% if r.in_our_db %}
+            {% if r.local_warehouse_id %}да{% else %}<span class="pill warning">нет</span>{% endif %}
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if r.in_our_db %}
+            {% if r.local_stock_deducted %}да{% else %}<span class="pill warning">нет</span>{% endif %}
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if r.raw_items %}
+          <div style="font-family: monospace; font-size: 12px; white-space: pre-wrap; max-width: 480px;">
+            {% for item in r.raw_items %}
+            <div style="{{ 'font-weight: 700; color: var(--accent);' if item.looks_like_status else '' }}">{{ item.key }}: {{ item.value }}</div>
+            {% endfor %}
+          </div>
+          {% else %}<span class="muted">WB не вернул данные по этому ID</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif order_ids_raw %}
+  <p class="muted">Ни один из введённых ID не является числом — WB принимает только числовые ID заказов.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>2. Какие статусы вообще есть у нас в базе</h2>
+  <p class="muted">
+    Сверьте со списком статусов, которые код считает отменой:
+    <code>{{ cancel_statuses | join(', ') }}</code>. Если у WB отмена приходит под другой строкой —
+    здесь она будет выглядеть как обычный, «незавершённый» статус.
+  </p>
+  <table>
+    <thead><tr><th>Статус</th><th>Кол-во заказов</th><th>Считается отменой?</th></tr></thead>
+    <tbody>
+      {% for s in status_counts %}
+      <tr>
+        <td>{{ s.status }}</td>
+        <td>{{ s.c }}</td>
+        <td>
+          {% if s.status in cancel_statuses %}<span class="pill ok">да</span>
+          {% else %}<span class="pill warning">нет</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>3. Заказы с нечисловым ID (никогда не проверяются на смену статуса)</h2>
+  <p class="muted">
+    Синхронизация отправляет на проверку статуса только заказы, чей ID — обычное число. Если у WB
+    встречаются другие форматы ID, такие заказы застревают навсегда в своём первом статусе.
+  </p>
+  {% if non_digit_orders %}
+  <table>
+    <thead><tr><th>ID заказа</th><th>Статус</th><th>Создан</th></tr></thead>
+    <tbody>
+      {% for o in non_digit_orders %}
+      <tr><td>{{ o.wb_order_id }}</td><td>{{ o.status }}</td><td>{{ o.created_at | dtfmt }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Таких не найдено — эта версия не подтвердилась.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>4. Незавершённые заказы без склада или без списания</h2>
+  <p class="muted">
+    Даже если WB пришлёт по такому заказу статус «отмена», код молча ничего не сделает — потому что
+    возврат остатка возможен только для заказов, у которых остаток вообще был списан с известного
+    склада.
+  </p>
+  {% if gating_issues %}
+  <table>
+    <thead><tr><th>ID заказа</th><th>Статус</th><th>Склад привязан?</th><th>Списание было?</th></tr></thead>
+    <tbody>
+      {% for o in gating_issues %}
+      <tr>
+        <td>{{ o.wb_order_id }}</td>
+        <td>{{ o.status }}</td>
+        <td>{% if o.warehouse_id %}да{% else %}<span class="pill warning">нет</span>{% endif %}</td>
+        <td>{% if o.stock_deducted %}да{% else %}<span class="pill warning">нет</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Таких не найдено — эта версия не подтвердилась.</p>
+  {% endif %}
+</div>
+{% endblock %}

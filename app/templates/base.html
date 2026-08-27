@@ -22,6 +22,7 @@
       <a href="/warehouses">Склады</a>
       <a href="/fulfillment-centers">ФФ</a>
       {% if user.role == 'admin' %}<a href="/users">Пользователи</a>{% endif %}
+      {% if user.role == 'admin' %}<a href="/wb-diagnostics">Диагностика WB</a>{% endif %}
       <a href="/logout">Выйти ({{ user.username }})</a>
     </nav>
   </div>

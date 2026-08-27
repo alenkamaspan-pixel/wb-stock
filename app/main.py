@@ -14,7 +14,7 @@ from app.models import MovementType, MovementSource
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
 from app.sync import (
     sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock,
-    get_stock_locations,
+    get_stock_locations, CANCEL_STATUSES,
 )
 from app.wb_client import WBClient, WBApiError
 from app.analytics import (
@@ -232,6 +232,105 @@ def wb_orders_log_page():
         """
     ).fetchall()
     return render_template("wb_orders_log.html", events=events)
+
+
+TERMINAL_STATUSES = ("complete", "cancel", "canceled", "cancelled", "declined", "reject")
+
+
+@app.route("/wb-diagnostics")
+@login_required
+def wb_diagnostics_page():
+    """Технический раздел только для чтения: проверяет за один проход сразу
+    несколько версий того, почему реальные отмены WB (см. кабинет WB
+    Partners) не появляются в нашей системе, вместо того чтобы гонять
+    гипотезы по одной через скриншоты. Ничего не пишет ни в нашу базу, ни
+    тем более обратно в WB.
+
+    Доступен только администратору — это отладочный инструмент, а не
+    рабочая страница склада."""
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("dashboard", error="Недостаточно прав"))
+
+    placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
+
+    # --- 1) Разбивка всех заказов в НАШЕЙ базе по статусам, как они сейчас
+    # хранятся — если WB реально использует другую строку для отмены, чем
+    # зашито в CANCEL_STATUSES (sync.py), она будет видна здесь как
+    # "нормальный", незавершённый статус, который никогда не считается отменой.
+    status_counts = g.db.execute(
+        "SELECT status, COUNT(*) AS c FROM wb_orders GROUP BY status ORDER BY c DESC"
+    ).fetchall()
+
+    tracked = g.db.execute(
+        f"SELECT * FROM wb_orders WHERE status NOT IN ({placeholders})",
+        TERMINAL_STATUSES,
+    ).fetchall()
+
+    # --- 2) Заказы, чей ID не является чисто числовым — sync.py фильтрует их
+    # через str(...).isdigit() и НИКОГДА не отправляет на проверку статуса в
+    # WB, то есть их отмена физически не может быть замечена.
+    non_digit_orders = [o for o in tracked if not str(o["wb_order_id"]).isdigit()]
+
+    # --- 3) Отслеживаемые (ещё не завершённые, по нашим данным) заказы, у
+    # которых нет привязанного склада и/или списание не проводилось — даже
+    # если WB пришлёт по ним статус "отмена", код sync.py молча ничего не
+    # сделает, потому что условие `stock_deducted and warehouse_id` не
+    # выполнится.
+    gating_issues = [
+        o for o in tracked if not o["warehouse_id"] or not o["stock_deducted"]
+    ]
+
+    # --- 4) Точечная проверка конкретных ID заказов — берём ID прямо из
+    # кабинета WB Partners (например, из вкладки «Отменённые») и смотрим
+    # СЫРОЙ ответ WB API по каждому, целиком, а не только supplierStatus —
+    # чтобы увидеть, нет ли там отдельного поля вроде wbStatus, которое мы
+    # сейчас нигде не читаем.
+    order_ids_raw = request.args.get("order_ids", "").strip()
+    probe_results = []
+    probe_error = None
+    if order_ids_raw:
+        requested_ids = [x.strip() for x in order_ids_raw.replace(",", " ").split() if x.strip()]
+        numeric_ids = [int(x) for x in requested_ids if x.isdigit()]
+        wb_by_id = {}
+        try:
+            if numeric_ids:
+                wb_statuses = WBClient().get_orders_status(numeric_ids)
+                wb_by_id = {str(s.get("id")): s for s in wb_statuses}
+        except WBApiError as e:
+            probe_error = str(e)
+
+        for order_id in requested_ids:
+            local = g.db.execute(
+                "SELECT * FROM wb_orders WHERE wb_order_id = ?", (order_id,)
+            ).fetchone()
+            raw = wb_by_id.get(order_id)
+            raw_items = None
+            if raw is not None:
+                raw_items = [
+                    {"key": k, "value": v, "looks_like_status": "status" in k.lower()}
+                    for k, v in raw.items()
+                ]
+            probe_results.append({
+                "order_id": order_id,
+                "found_in_wb_response": raw is not None,
+                "in_our_db": local is not None,
+                "local_status": local["status"] if local else None,
+                "local_warehouse_id": local["warehouse_id"] if local else None,
+                "local_stock_deducted": local["stock_deducted"] if local else None,
+                "raw_items": raw_items,
+            })
+
+    return render_template(
+        "wb_diagnostics.html",
+        status_counts=status_counts,
+        non_digit_orders=non_digit_orders,
+        gating_issues=gating_issues,
+        order_ids_raw=order_ids_raw,
+        probe_results=probe_results,
+        probe_error=probe_error,
+        cancel_statuses=sorted(CANCEL_STATUSES),
+    )
 
 
 def _resolve_location(conn, location_key: str):
