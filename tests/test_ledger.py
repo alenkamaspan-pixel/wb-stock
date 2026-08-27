@@ -16,25 +16,25 @@ os.environ["DATABASE_PATH"] = TEST_DB
 os.environ["SECRET_KEY"] = "test"
 
 from app.database import init_db, get_conn, now_iso  # noqa: E402
-from app.sync import sync_once, get_current_stock  # noqa: E402
+from app.sync import sync_once, get_current_stock, get_stock_by_ff, get_stock_locations  # noqa: E402
 
 
 class MockWBClient:
-    """Имитирует WBClient: отдаёт заранее заданные ответы, ничего не шлёт по сети."""
+    """Имитирует WBClient: отдаёт заранее заданные ответы, ничего не шлёт по сети.
+    Реальный WBClient тоже ничего не пишет в WB — только читает заказы/статусы."""
     def __init__(self):
         self.new_orders_queue = []
         self.status_updates = {}
-        self.pushed_stocks = []  # [(warehouse_id, items)]
 
     def get_new_orders(self):
         orders, self.new_orders_queue = self.new_orders_queue, []
         return orders
 
     def get_orders_status(self, order_ids):
-        return [{"id": oid, "status": self.status_updates[oid]} for oid in order_ids if oid in self.status_updates]
-
-    def update_stocks(self, wb_warehouse_id, items):
-        self.pushed_stocks.append((wb_warehouse_id, items))
+        # Реальный WB отдаёт статус сборочного задания в supplierStatus, а не в
+        # "status" — раньше мок был неправильным (совпадал со старым багом
+        # в sync.py и поэтому не мог его поймать).
+        return [{"id": oid, "supplierStatus": self.status_updates[oid]} for oid in order_ids if oid in self.status_updates]
 
 
 def check(label, condition):
@@ -47,8 +47,8 @@ def check(label, condition):
 init_db()
 conn = get_conn()
 conn.execute(
-    "INSERT INTO warehouses (name, wb_warehouse_id, is_synced_to_wb, is_active, created_at) "
-    "VALUES ('Тестовый склад', 555, 1, 1, ?)", (now_iso(),)
+    "INSERT INTO warehouses (name, wb_warehouse_id, is_active, created_at) "
+    "VALUES ('Тестовый склад', 555, 1, ?)", (now_iso(),)
 )
 warehouse_id = conn.execute("SELECT id FROM warehouses WHERE wb_warehouse_id=555").fetchone()["id"]
 conn.execute(
@@ -85,12 +85,6 @@ check("Заказ сохранён со статусом new", order["status"] =
 check("Флаг stock_deducted выставлен", order["stock_deducted"] == 1)
 conn.close()
 
-check("Остаток отправлен обратно в WB", len(mock.pushed_stocks) == 1)
-check(
-    "В WB отправлено правильное количество (9)",
-    mock.pushed_stocks[0] == (555, [{"sku": "TESTBARCODE1", "amount": 9}]),
-)
-
 # --- Шаг 2: заказ отменяется — остаток должен вернуться ---
 mock2 = MockWBClient()
 mock2.status_updates = {1001: "cancel"}
@@ -107,11 +101,6 @@ check("Статус заказа обновился на cancel", order2["status
 check("Флаг stock_deducted сброшен", order2["stock_deducted"] == 0)
 conn.close()
 
-check(
-    "После отмены в WB снова отправлено верное количество (10)",
-    mock2.pushed_stocks[0] == (555, [{"sku": "TESTBARCODE1", "amount": 10}]),
-)
-
 # --- Шаг 3: повторный синк того же заказа не должен задвоить списание ---
 mock3 = MockWBClient()
 mock3.new_orders_queue = [{"orderId": 1001, "nmId": 999, "skus": ["TESTBARCODE1"], "warehouseId": 555}]
@@ -119,6 +108,83 @@ result3 = sync_once(mock3)
 check("Дублирующийся заказ не создал новых движений", result3["movements_created"] == 0)
 conn = get_conn()
 check("Остаток не изменился (всё ещё 10)", get_current_stock(conn, product_id, warehouse_id) == 10)
+conn.close()
+
+# --- Шаг 4: агрегация остатков по ФФ (фулфилмент-центрам) ---
+conn = get_conn()
+cur = conn.execute("INSERT INTO fulfillment_centers (name, is_active, created_at) VALUES ('ФФ Тест', 1, ?)", (now_iso(),))
+ff_id = cur.lastrowid
+conn.execute("UPDATE warehouses SET fulfillment_center_id = ? WHERE id = ?", (ff_id, warehouse_id))
+conn.execute(
+    "INSERT INTO warehouses (name, wb_warehouse_id, fulfillment_center_id, is_active, created_at) "
+    "VALUES ('Второй склад того же ФФ', 556, ?, 1, ?)", (ff_id, now_iso()),
+)
+warehouse2_id = conn.execute("SELECT id FROM warehouses WHERE wb_warehouse_id=556").fetchone()["id"]
+conn.execute(
+    "INSERT INTO stock_movements (product_id, warehouse_id, movement_type, delta, source, created_at) "
+    "VALUES (?, ?, 'income', 5, 'manual', ?)",
+    (product_id, warehouse2_id, now_iso()),
+)
+conn.commit()
+
+groups = get_stock_by_ff(conn)
+ff_group = next((g for g in groups if g["ff_id"] == ff_id), None)
+check("группа ФФ появилась в агрегации", ff_group is not None)
+total = next(t["quantity"] for t in ff_group["totals"] if t["product_id"] == product_id)
+# ФФ — единственный уровень, на котором остаток вообще что-то значит (виртуальные
+# склады WB внутри одного ФФ физически делят одну и ту же кучу товара), поэтому
+# get_stock_by_ff больше не отдаёт разбивку по складам — только итог по ФФ.
+check(f"итого по ФФ = 15 (10 + 5), получено {total}", total == 15)
+check(f"ff_total = 15, получено {ff_group['ff_total']}", ff_group["ff_total"] == 15)
+check("в группе ФФ нет разбивки по складам (rows)", "rows" not in ff_group)
+check("в группе ФФ нет разбивки по складам (warehouse_totals)", "warehouse_totals" not in ff_group)
+conn.close()
+
+# --- Шаг 5: get_stock_locations — один ФФ = одно место хранения ---
+conn = get_conn()
+locations = get_stock_locations(conn)
+loc_keys = {loc["key"] for loc in locations}
+check(f"ФФ с двумя складами даёт ОДНУ запись в местах хранения, получено {loc_keys}", f"ff:{ff_id}" in loc_keys)
+check(
+    "оба виртуальных склада этого ФФ НЕ фигурируют как отдельные места",
+    f"wh:{warehouse_id}" not in loc_keys and f"wh:{warehouse2_id}" not in loc_keys,
+)
+conn.close()
+
+# --- Шаг 6: сбой на этапе проверки статусов не должен ронять уже обработанные
+# новые заказы (раньше вся синхронизация была одной транзакцией и откатывала
+# ВСЁ, если WB API падал на втором этапе — из-за этого зависали и новые заказы) ---
+conn = get_conn()
+conn.execute(
+    "INSERT INTO stock_movements (product_id, warehouse_id, movement_type, delta, source, created_at) "
+    "VALUES (?, ?, 'income', 100, 'manual', ?)",
+    (product_id, warehouse_id, now_iso()),
+)
+conn.commit()
+conn.close()
+
+
+class FailingStatusMockWBClient(MockWBClient):
+    """Новые заказы обрабатываются нормально, а проверка статусов всегда падает —
+    имитирует WB, отклоняющий слишком большой/проблемный запрос /orders/status."""
+    def get_orders_status(self, order_ids):
+        from app.wb_client import WBApiError
+        raise WBApiError("имитация сбоя WB на проверке статусов")
+
+
+mock6 = FailingStatusMockWBClient()
+mock6.new_orders_queue = [{"orderId": 2002, "nmId": 999, "skus": ["TESTBARCODE1"], "warehouseId": 555}]
+stock_before = get_current_stock(get_conn(), product_id, warehouse_id)
+result6 = sync_once(mock6)
+check(f"статус синка при сбое проверки статусов = warning, получено {result6['status']}", result6["status"] == "warning")
+check("новый заказ всё равно обработан (movements_created >= 1)", result6["movements_created"] >= 1)
+conn = get_conn()
+stock_after = get_current_stock(conn, product_id, warehouse_id)
+check(
+    f"остаток по новому заказу списался, несмотря на сбой этапа статусов ({stock_before} -> {stock_after})",
+    stock_after == stock_before - 1,
+)
+conn.close()
 conn.close()
 
 print("\nВсе проверки бизнес-логики пройдены успешно.")
