@@ -3,6 +3,52 @@
 {% block content %}
 <h1>Склады</h1>
 
+<div class="card">
+  <h2>Фулфилмент-центры (ФФ)</h2>
+  <p class="muted">
+    ФФ — это ваш фулфилмент-центр (физический склад-партнёр), который может обслуживать
+    сразу несколько складов WB в разных регионах. Привязать к нему конкретные склады можно
+    здесь через «Изменить», либо ниже, при добавлении/редактировании самого склада.
+  </p>
+
+  {% if can_edit %}
+  <form class="inline" method="post" action="/fulfillment-centers/new" style="margin-top:14px;">
+    <div><label>Название ФФ</label><input type="text" name="name" required placeholder="например, Москва"></div>
+    <button type="submit">Добавить ФФ</button>
+  </form>
+  {% endif %}
+
+  {% if ff_list %}
+  <table style="margin-top:16px;">
+    <thead><tr><th>Название</th><th>Обслуживает складов</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for f in ff_list %}
+      {% set linked = warehouses | selectattr('fulfillment_center_id', 'equalto', f.id) | list %}
+      {% set ff_color = 'ff-color-' ~ (f.id % 6) %}
+      <tr>
+        <td><span class="ff-tag {{ ff_color }}">{{ f.name }}</span></td>
+        <td class="muted">
+          {{ linked | length }}{% if linked %} ({{ linked | map(attribute='name') | join(', ') }}){% endif %}
+        </td>
+        <td>{{ 'да' if f.is_active else 'нет' }}</td>
+        {% if can_edit %}
+        <td style="white-space:nowrap;">
+          <a href="/fulfillment-centers/{{ f.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+          <form method="post" action="/fulfillment-centers/{{ f.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить ФФ «{{ f.name }}»? Привязанные склады не удалятся — просто отвяжутся от него.');">
+            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top:16px;">Пока ни одного ФФ не добавлено.</p>
+  {% endif %}
+</div>
+
 {% if can_edit %}
 <div class="card">
   <h2>Добавить склад</h2>
@@ -12,7 +58,7 @@
     <div><label>ФФ (необязательно)</label>
       <select name="fulfillment_center_id">
         <option value="">— без ФФ —</option>
-        {% for f in ff_list %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}
+        {% for f in ff_options %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}
       </select>
     </div>
     <button type="submit">Добавить</button>
@@ -21,8 +67,7 @@
     ID склада в WB нужен, чтобы приложение понимало, с какого именно вашего
     склада WB просит собрать заказ, и списывало остаток с правильного места.
     Если склад не привязан к WB (например, внутренний учётный) — оставьте поле пустым.
-    ФФ — это фулфилмент-центр, который физически обслуживает этот склад (см. страницу «ФФ»);
-    один ФФ может обслуживать сразу несколько таких складов.
+    Один ФФ (см. выше) может обслуживать сразу несколько таких складов.
   </p>
   <form method="post" action="/warehouses/import-from-wb" style="margin-top:10px;">
     <button type="submit" class="btn-secondary">Импортировать список складов из WB</button>

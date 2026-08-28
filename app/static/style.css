@@ -288,3 +288,94 @@ details.detail-table table { margin-top: 10px; }
 .sparkbar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .sparkbar-track { flex: 1; height: 9px; background: var(--accent-soft); border-radius: 999px; overflow: hidden; }
 .sparkbar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+
+/* ------------------------------------------------------ профиль: аватар
+   в шапке + выпадающее меню (Настройки/Пользователи/Диагностика/Выход).
+   28.08.2026: по просьбе Алёны — раньше эти пункты были отдельными
+   ссылками в навигации, из-за чего она съезжала на два ряда. */
+.profile-menu { position: relative; display: inline-flex; margin-left: 18px; vertical-align: middle; }
+.profile-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none;
+}
+.profile-avatar:hover { background: var(--accent-soft); border-color: var(--accent); }
+.profile-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.profile-avatar span {
+  font-family: "Unbounded", sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--accent-dark);
+}
+/* дропдаун начинается СРАЗУ у нижнего края аватара (top:100%, без margin) —
+   зазор делаем невидимым padding-ом внутри самого .profile-dropdown, а не
+   отступом снаружи, иначе курсор "теряет" наведение между кнопкой и меню */
+.profile-dropdown {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  padding-top: 10px;
+  z-index: 30;
+}
+.profile-menu:hover .profile-dropdown,
+.profile-menu:focus-within .profile-dropdown { display: block; }
+.profile-dropdown-inner {
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  min-width: 190px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+.profile-dropdown-header {
+  padding: 6px 12px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.profile-dropdown-inner a {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+}
+.profile-dropdown-inner a:hover { background: var(--accent-soft); color: var(--accent-dark); }
+
+.profile-avatar-preview {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.profile-avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
+.profile-avatar-preview span {
+  font-family: "Unbounded", sans-serif;
+  font-weight: 700;
+  font-size: 28px;
+  color: var(--accent-dark);
+}

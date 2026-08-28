@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Настройки{% endblock %}
+{% block content %}
+<h1>Настройки профиля</h1>
+
+<div class="card">
+  <h2>Фото / логотип</h2>
+  <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+    <div class="profile-avatar-preview">
+      {% if user.avatar_data_url %}
+      <img src="{{ user.avatar_data_url }}" alt="{{ user.username }}">
+      {% else %}
+      <span>{{ user.username[0] | upper }}</span>
+      {% endif %}
+    </div>
+    <div>
+      <form method="post" action="/settings/avatar" enctype="multipart/form-data" class="inline">
+        <div><label>Новое фото (PNG, JPEG, WEBP или GIF, до 1 МБ)</label><input type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif" required></div>
+        <button type="submit">Загрузить</button>
+      </form>
+      {% if user.avatar_data_url %}
+      <form method="post" action="/settings/avatar/remove" style="margin-top:10px;"
+            onsubmit="return confirm('Убрать фото профиля?');">
+        <button type="submit" class="btn-secondary">Убрать фото</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Смена пароля</h2>
+  <form method="post" action="/settings/password" class="inline">
+    <div><label>Текущий пароль</label><input type="password" name="current_password" required></div>
+    <div><label>Новый пароль</label><input type="password" name="new_password" required></div>
+    <div><label>Повторите новый пароль</label><input type="password" name="confirm_password" required></div>
+    <button type="submit">Сменить пароль</button>
+  </form>
+</div>
+{% endblock %}

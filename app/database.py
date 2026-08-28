@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'manager',
+    -- 28.08.2026: фото/логотип для меню профиля — храним прямо как data URL
+    -- (data:image/...;base64,...), без отдельного файлового хранилища: проще
+    -- и надёжнее при деплое на Railway (нет отдельного диска для аплоадов).
+    avatar_data_url TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -188,6 +192,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     order_cols = {row["name"] for row in conn.execute("PRAGMA table_info(wb_orders)").fetchall()}
     if "wb_status" not in order_cols:
         conn.execute("ALTER TABLE wb_orders ADD COLUMN wb_status TEXT")
+        conn.commit()
+
+    user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "avatar_data_url" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN avatar_data_url TEXT")
         conn.commit()
 
 

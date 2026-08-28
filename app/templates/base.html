@@ -20,11 +20,25 @@
       <a href="/wb-orders-log">Заказы WB</a>
       <a href="/products">Товары</a>
       <a href="/warehouses">Склады</a>
-      <a href="/fulfillment-centers">ФФ</a>
       <a href="/ozon">Ozon</a>
-      {% if user.role == 'admin' %}<a href="/users">Пользователи</a>{% endif %}
-      {% if user.role == 'admin' %}<a href="/wb-diagnostics">Диагностика WB</a>{% endif %}
-      <a href="/logout">Выйти ({{ user.username }})</a>
+      <div class="profile-menu">
+        <button class="profile-avatar" type="button" aria-haspopup="true" aria-label="Профиль: {{ user.username }}">
+          {% if user.avatar_data_url %}
+          <img src="{{ user.avatar_data_url }}" alt="{{ user.username }}">
+          {% else %}
+          <span>{{ user.username[0] | upper }}</span>
+          {% endif %}
+        </button>
+        <div class="profile-dropdown">
+          <div class="profile-dropdown-inner">
+            <div class="profile-dropdown-header">{{ user.username }}</div>
+            <a href="/settings">Настройки</a>
+            {% if user.role == 'admin' %}<a href="/users">Пользователи</a>{% endif %}
+            {% if user.role == 'admin' %}<a href="/wb-diagnostics">Диагностика WB</a>{% endif %}
+            <a href="/logout">Выйти</a>
+          </div>
+        </div>
+      </div>
     </nav>
   </div>
   {% endif %}

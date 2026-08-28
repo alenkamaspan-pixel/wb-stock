@@ -1,4 +1,5 @@
 """Точка входа приложения: Flask-роуты, авторизация, фоновая синхронизация с WB."""
+import base64
 import csv
 import datetime as dt
 import io
@@ -762,6 +763,10 @@ def product_alias_delete(alias_id):
 
 
 # --------------------------------------------------------------- warehouses
+# 28.08.2026: страницы «Склады» и «ФФ» объединены в одну (по просьбе Алёны —
+# в навигации было тесно и запутанно держать их отдельно). Роуты и логика
+# создания/изменения/удаления самих ФФ и складов не менялись ни на строчку —
+# только собраны на одной странице /warehouses вместо двух разных.
 @app.route("/warehouses")
 @login_required
 def warehouses_page():
@@ -773,9 +778,11 @@ def warehouses_page():
         ORDER BY w.name
         """
     ).fetchall()
-    ff_list = g.db.execute("SELECT * FROM fulfillment_centers WHERE is_active = 1 ORDER BY name").fetchall()
+    ff_list = g.db.execute("SELECT * FROM fulfillment_centers ORDER BY name").fetchall()
+    ff_options = [f for f in ff_list if f["is_active"]]
     return render_template(
-        "warehouses.html", warehouses=warehouses, ff_list=ff_list, can_edit=can_edit(get_current_user()),
+        "warehouses.html", warehouses=warehouses, ff_list=ff_list, ff_options=ff_options,
+        can_edit=can_edit(get_current_user()),
     )
 
 
@@ -893,15 +900,14 @@ def warehouses_import():
 
 
 # ------------------------------------------------------ fulfillment centers
+# 28.08.2026: отдельная страница /fulfillment-centers упразднена — теперь
+# просто перенаправляет на объединённую страницу /warehouses («Склады»).
+# Оставлена (а не удалена), чтобы старая ссылка в закладках не превращалась
+# в 404. Все POST-роуты ниже (создание/изменение ФФ) не менялись.
 @app.route("/fulfillment-centers")
 @login_required
 def ff_page():
-    ff_list = g.db.execute("SELECT * FROM fulfillment_centers ORDER BY name").fetchall()
-    warehouses = g.db.execute("SELECT * FROM warehouses ORDER BY name").fetchall()
-    return render_template(
-        "fulfillment_centers.html", ff_list=ff_list, warehouses=warehouses,
-        can_edit=can_edit(get_current_user()),
-    )
+    return redirect(url_for("warehouses_page"))
 
 
 @app.route("/fulfillment-centers/new", methods=["POST"])
@@ -909,7 +915,7 @@ def ff_page():
 def ff_new():
     user = get_current_user()
     if not can_edit(user):
-        return redirect(url_for("ff_page", error="Недостаточно прав"))
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     name = request.form["name"].strip()
     try:
         g.db.execute(
@@ -918,8 +924,8 @@ def ff_new():
         )
         g.db.commit()
     except Exception as e:
-        return redirect(url_for("ff_page", error=f"Не удалось добавить ФФ: {e}"))
-    return redirect(url_for("ff_page", ok="Фулфилмент-центр добавлен"))
+        return redirect(url_for("warehouses_page", error=f"Не удалось добавить ФФ: {e}"))
+    return redirect(url_for("warehouses_page", ok="Фулфилмент-центр добавлен"))
 
 
 @app.route("/fulfillment-centers/<int:ff_id>/edit", methods=["GET"])
@@ -927,10 +933,10 @@ def ff_new():
 def ff_edit_form(ff_id):
     user = get_current_user()
     if not can_edit(user):
-        return redirect(url_for("ff_page", error="Недостаточно прав"))
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     ff = g.db.execute("SELECT * FROM fulfillment_centers WHERE id = ?", (ff_id,)).fetchone()
     if not ff:
-        return redirect(url_for("ff_page", error="ФФ не найден"))
+        return redirect(url_for("warehouses_page", error="ФФ не найден"))
     warehouses = g.db.execute("SELECT * FROM warehouses ORDER BY name").fetchall()
     return render_template("ff_edit.html", ff=ff, warehouses=warehouses)
 
@@ -940,10 +946,10 @@ def ff_edit_form(ff_id):
 def ff_edit(ff_id):
     user = get_current_user()
     if not can_edit(user):
-        return redirect(url_for("ff_page", error="Недостаточно прав"))
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     ff = g.db.execute("SELECT * FROM fulfillment_centers WHERE id = ?", (ff_id,)).fetchone()
     if not ff:
-        return redirect(url_for("ff_page", error="ФФ не найден"))
+        return redirect(url_for("warehouses_page", error="ФФ не найден"))
     name = request.form["name"].strip()
     is_active = 1 if request.form.get("is_active") == "1" else 0
     g.db.execute(
@@ -967,7 +973,7 @@ def ff_edit(ff_id):
                 (wid, ff_id),
             )
     g.db.commit()
-    return redirect(url_for("ff_page", ok="Фулфилмент-центр изменён"))
+    return redirect(url_for("warehouses_page", ok="Фулфилмент-центр изменён"))
 
 
 @app.route("/fulfillment-centers/<int:ff_id>/delete", methods=["POST"])
@@ -975,13 +981,13 @@ def ff_edit(ff_id):
 def ff_delete(ff_id):
     user = get_current_user()
     if not can_edit(user):
-        return redirect(url_for("ff_page", error="Недостаточно прав"))
+        return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     # Привязанные склады не удаляются — просто отвязываются от этого ФФ,
     # их остатки и история движений никуда не пропадают.
     g.db.execute("UPDATE warehouses SET fulfillment_center_id = NULL WHERE fulfillment_center_id = ?", (ff_id,))
     g.db.execute("DELETE FROM fulfillment_centers WHERE id = ?", (ff_id,))
     g.db.commit()
-    return redirect(url_for("ff_page", ok="Фулфилмент-центр удалён"))
+    return redirect(url_for("warehouses_page", ok="Фулфилмент-центр удалён"))
 
 
 # ---------------------------------------------------------------------- ozon
@@ -1048,6 +1054,70 @@ def ozon_set():
     )
     g.db.commit()
     return redirect(url_for("ozon_page", ok="Остаток на Ozon обновлён"))
+
+
+# ----------------------------------------------------------- профиль/настройки
+# 28.08.2026: окно профиля в шапке (фото/логотип + выпадающее меню) — по
+# запросу Алёны. Каждый пользователь управляет только СВОИМ аватаром и
+# паролем (без прав admin/can_edit — это не про склад, а про сам аккаунт).
+ALLOWED_AVATAR_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+MAX_AVATAR_BYTES = 1_000_000  # ~1 МБ хранится как есть (base64 в самой базе, без файлового диска)
+
+
+@app.route("/settings")
+@login_required
+def settings_page():
+    return render_template("settings.html", user=get_current_user())
+
+
+@app.route("/settings/avatar", methods=["POST"])
+@login_required
+def settings_avatar():
+    user = get_current_user()
+    file = request.files.get("avatar")
+    if not file or not file.filename:
+        return redirect(url_for("settings_page", error="Файл не выбран"))
+    content_type = file.mimetype
+    if content_type not in ALLOWED_AVATAR_TYPES:
+        return redirect(url_for("settings_page", error="Поддерживаются только PNG, JPEG, WEBP и GIF"))
+    data = file.read()
+    if not data:
+        return redirect(url_for("settings_page", error="Файл пустой"))
+    if len(data) > MAX_AVATAR_BYTES:
+        return redirect(url_for(
+            "settings_page", error="Файл слишком большой (максимум 1 МБ) — уменьшите изображение и попробуйте снова",
+        ))
+    data_url = f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+    g.db.execute("UPDATE users SET avatar_data_url = ? WHERE id = ?", (data_url, user["id"]))
+    g.db.commit()
+    return redirect(url_for("settings_page", ok="Фото профиля обновлено"))
+
+
+@app.route("/settings/avatar/remove", methods=["POST"])
+@login_required
+def settings_avatar_remove():
+    user = get_current_user()
+    g.db.execute("UPDATE users SET avatar_data_url = NULL WHERE id = ?", (user["id"],))
+    g.db.commit()
+    return redirect(url_for("settings_page", ok="Фото профиля удалено"))
+
+
+@app.route("/settings/password", methods=["POST"])
+@login_required
+def settings_password():
+    user = get_current_user()
+    current_password = request.form.get("current_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+    if not verify_password(current_password, user["password_hash"]):
+        return redirect(url_for("settings_page", error="Текущий пароль неверен"))
+    if len(new_password) < 4:
+        return redirect(url_for("settings_page", error="Новый пароль слишком короткий (минимум 4 символа)"))
+    if new_password != confirm_password:
+        return redirect(url_for("settings_page", error="Новые пароли не совпадают"))
+    g.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
+    g.db.commit()
+    return redirect(url_for("settings_page", ok="Пароль изменён"))
 
 
 # -------------------------------------------------------------------- users
