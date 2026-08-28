@@ -42,4 +42,53 @@
     </tbody>
   </table>
 </div>
+
+{% if is_admin %}
+<div class="card">
+  <h2>Алиасы товаров (слияние карточек WB)</h2>
+  <p class="muted">
+    Если на WB есть вторая карточка (свой barcode/nmId), которая на самом деле — тот же физический товар,
+    что и один из уже заведённых выше — добавьте её сюда как алиас. С этого момента её продажи по WB будут
+    списываться прямо с остатка целевого товара, а не вести свой отдельный остаток. Действует только на
+    заказы, которые придут ПОСЛЕ добавления алиаса — прошлую историю движений это не трогает.
+  </p>
+  <form class="inline" method="post" action="/products/aliases/new">
+    <div><label>Штрихкод карточки-алиаса</label><input type="text" name="alias_barcode"></div>
+    <div><label>nmId карточки-алиаса</label><input type="number" name="alias_nm_id"></div>
+    <div>
+      <label>Списывать на товар</label>
+      <select name="target_product_id" required>
+        <option value="">— выберите —</option>
+        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Комментарий</label><input type="text" name="comment" placeholder="например: вторая карточка на WB"></div>
+    <button type="submit">Добавить алиас</button>
+  </form>
+
+  {% if aliases %}
+  <table style="margin-top:16px;">
+    <thead><tr><th>Штрихкод алиаса</th><th>nmId алиаса</th><th>Списывается на</th><th>Комментарий</th><th></th></tr></thead>
+    <tbody>
+      {% for a in aliases %}
+      <tr>
+        <td>{{ a.alias_barcode or '—' }}</td>
+        <td>{{ a.alias_nm_id or '—' }}</td>
+        <td>{{ a.target_name }} ({{ a.target_sku }})</td>
+        <td>{{ a.comment or '—' }}</td>
+        <td>
+          <form method="post" action="/products/aliases/{{ a.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить алиас? Новые заказы по этой карточке снова начнут вести отдельный остаток.');">
+            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top:16px;">Алиасов пока нет.</p>
+  {% endif %}
+</div>
+{% endif %}
 {% endblock %}

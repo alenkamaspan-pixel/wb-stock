@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Ozon{% endblock %}
+{% block content %}
+<h1>Остатки на Ozon</h1>
+<p class="muted">
+  Отдельно от WB и пока полностью вручную — подключения к Ozon API нет, эти цифры вы вводите сами.
+  Никак не влияет на остатки WB и не участвует в синхронизации.
+</p>
+
+<div class="card">
+  <h2>Итого на Ozon: {{ total }} шт.</h2>
+  <table>
+    <thead><tr><th>SKU</th><th>Название</th><th>Остаток</th>{% if can_edit %}<th>Обновлено</th><th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.sku }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.quantity }}</td>
+        {% if can_edit %}
+        <td class="muted">{{ r.updated_at | dtfmt if r.updated_at else '—' }}</td>
+        <td>
+          <form class="inline" method="post" action="/ozon/set" style="gap:8px;">
+            <input type="hidden" name="product_id" value="{{ r.product_id }}">
+            <input type="number" name="quantity" value="{{ r.quantity }}" min="0" style="width:90px;" required>
+            <input type="text" name="comment" placeholder="комментарий" style="width:160px;">
+            <button type="submit" style="padding:4px 10px; font-size:13px;">Сохранить</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

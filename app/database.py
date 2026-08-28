@@ -99,6 +99,44 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     movements_created INTEGER DEFAULT 0,
     message TEXT
 );
+
+-- 28.08.2026: слияние карточек WB, которые физически — один и тот же товар
+-- (например, "9690-2 карта" nm_id=1454601004 — это на самом деле "Шейвер 1.4"
+-- CR-9690, просто вторая карточка на WB). Если для входящего заказа найден
+-- алиас по barcode/nm_id — списание идёт сразу на target_product_id, у самой
+-- карточки-алиаса свой остаток больше не ведётся. См. sync._find_or_create_product.
+CREATE TABLE IF NOT EXISTS product_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias_barcode TEXT UNIQUE,
+    alias_nm_id INTEGER UNIQUE,
+    target_product_id INTEGER NOT NULL REFERENCES products(id),
+    comment TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- 28.08.2026: остатки Ozon — пока считаются отдельно от WB и вручную (без
+-- подключения к Ozon API). Сознательно НЕ используют общий stock_movements —
+-- это не событийный журнал заказов/приходов, а просто текущее число по
+-- каждому товару, которое вводит человек. История изменений — в
+-- ozon_stock_log, только для прозрачности (кто/когда поменял), без какого-либо
+-- влияния на остатки WB.
+CREATE TABLE IF NOT EXISTS ozon_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL UNIQUE REFERENCES products(id),
+    quantity INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by_id INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS ozon_stock_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    old_quantity INTEGER NOT NULL,
+    new_quantity INTEGER NOT NULL,
+    comment TEXT,
+    created_by_id INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL
+);
 """
 
 

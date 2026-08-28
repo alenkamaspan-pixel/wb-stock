@@ -221,7 +221,29 @@ def get_stock_locations(conn: sqlite3.Connection) -> list[dict]:
     return result
 
 
+def _resolve_alias(conn: sqlite3.Connection, nm_id, barcode):
+    """28.08.2026: если этот barcode/nm_id объявлен алиасом другого товара
+    (см. product_aliases — карточка WB, которая физически тот же товар, что
+    и другая карточка), возвращает id ТОГО, основного товара — у самой
+    карточки-алиаса отдельный остаток больше не ведётся, её продажи по WB
+    списываются сразу с целевого товара."""
+    alias = None
+    if barcode:
+        alias = conn.execute(
+            "SELECT target_product_id FROM product_aliases WHERE alias_barcode = ?", (barcode,)
+        ).fetchone()
+    if not alias and nm_id:
+        alias = conn.execute(
+            "SELECT target_product_id FROM product_aliases WHERE alias_nm_id = ?", (nm_id,)
+        ).fetchone()
+    return alias["target_product_id"] if alias else None
+
+
 def _find_or_create_product(conn: sqlite3.Connection, nm_id, barcode, name_hint: str) -> int:
+    aliased_product_id = _resolve_alias(conn, nm_id, barcode)
+    if aliased_product_id:
+        return aliased_product_id
+
     product = None
     if barcode:
         product = conn.execute("SELECT * FROM products WHERE barcode = ?", (barcode,)).fetchone()

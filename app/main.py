@@ -622,7 +622,18 @@ def movement_delete(movement_id):
 @login_required
 def products_page():
     products = g.db.execute("SELECT * FROM products ORDER BY name").fetchall()
-    return render_template("products.html", products=products, can_edit=can_edit(get_current_user()))
+    aliases = g.db.execute(
+        """
+        SELECT a.*, p.name AS target_name, p.sku AS target_sku
+        FROM product_aliases a
+        JOIN products p ON p.id = a.target_product_id
+        ORDER BY a.created_at DESC
+        """
+    ).fetchall()
+    return render_template(
+        "products.html", products=products, aliases=aliases,
+        can_edit=can_edit(get_current_user()), is_admin=is_admin(get_current_user()),
+    )
 
 
 @app.route("/products/new", methods=["POST"])
@@ -698,6 +709,56 @@ def product_delete(product_id):
                   "Если он больше не нужен — просто переименуйте его через «Изменить».",
         ))
     return redirect(url_for("products_page", ok="Товар удалён"))
+
+
+# --------------------------------------------------------- алиасы товаров
+# 28.08.2026: карточка WB (barcode/nmId), которая физически — тот же товар,
+# что и другой, уже заведённый у нас продукт. После добавления алиаса её
+# будущие продажи по WB списываются сразу с остатка целевого товара, у самой
+# карточки-алиаса отдельный остаток больше не ведётся. Ничего из прошлой
+# истории движений не трогает — действует только на новые заказы вперёд.
+# Меняет то, как считается остаток при синхронизации — поэтому только админ.
+@app.route("/products/aliases/new", methods=["POST"])
+@login_required
+def product_alias_new():
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("products_page", error="Недостаточно прав"))
+    alias_barcode = request.form.get("alias_barcode", "").strip()
+    alias_nm_id = request.form.get("alias_nm_id", "").strip()
+    target_product_id = request.form.get("target_product_id", "").strip()
+    comment = request.form.get("comment", "").strip()
+    if not alias_barcode and not alias_nm_id:
+        return redirect(url_for("products_page", error="Укажите штрихкод и/или nmId алиаса"))
+    if not target_product_id:
+        return redirect(url_for("products_page", error="Выберите целевой товар"))
+    try:
+        g.db.execute(
+            "INSERT INTO product_aliases (alias_barcode, alias_nm_id, target_product_id, comment, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                alias_barcode or None, int(alias_nm_id) if alias_nm_id else None,
+                int(target_product_id), comment or None, now_iso(),
+            ),
+        )
+        g.db.commit()
+    except sqlite3.IntegrityError:
+        return redirect(url_for(
+            "products_page",
+            error="Такой штрихкод или nmId уже используется другим алиасом (или самим товаром)",
+        ))
+    return redirect(url_for("products_page", ok="Алиас добавлен"))
+
+
+@app.route("/products/aliases/<int:alias_id>/delete", methods=["POST"])
+@login_required
+def product_alias_delete(alias_id):
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("products_page", error="Недостаточно прав"))
+    g.db.execute("DELETE FROM product_aliases WHERE id = ?", (alias_id,))
+    g.db.commit()
+    return redirect(url_for("products_page", ok="Алиас удалён"))
 
 
 # --------------------------------------------------------------- warehouses
@@ -921,6 +982,72 @@ def ff_delete(ff_id):
     g.db.execute("DELETE FROM fulfillment_centers WHERE id = ?", (ff_id,))
     g.db.commit()
     return redirect(url_for("ff_page", ok="Фулфилмент-центр удалён"))
+
+
+# ---------------------------------------------------------------------- ozon
+# 28.08.2026: остатки на Ozon — отдельно от WB и пока полностью вручную, без
+# подключения к Ozon API. Сознательно НЕ через stock_movements (это не
+# журнал заказов/приходов WB, а просто текущее число по каждому товару,
+# которое вводит человек) — чтобы не перепутать с WB-остатками и не задеть
+# их логику синхронизации. История правок — в ozon_stock_log, только для
+# прозрачности (кто и когда поменял), возврата назад через неё пока нет.
+@app.route("/ozon")
+@login_required
+def ozon_page():
+    rows = g.db.execute(
+        """
+        SELECT p.id AS product_id, p.sku, p.name,
+               COALESCE(o.quantity, 0) AS quantity, o.updated_at
+        FROM products p
+        LEFT JOIN ozon_stock o ON o.product_id = p.id
+        ORDER BY p.name
+        """
+    ).fetchall()
+    total = sum(r["quantity"] for r in rows)
+    return render_template(
+        "ozon.html", rows=rows, total=total, can_edit=can_edit(get_current_user()),
+    )
+
+
+@app.route("/ozon/set", methods=["POST"])
+@login_required
+def ozon_set():
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("ozon_page", error="Недостаточно прав"))
+    product_id = request.form.get("product_id", "").strip()
+    quantity_raw = request.form.get("quantity", "").strip()
+    comment = request.form.get("comment", "").strip()
+    if not product_id or quantity_raw == "":
+        return redirect(url_for("ozon_page", error="Не указан товар или количество"))
+    try:
+        quantity = int(quantity_raw)
+    except ValueError:
+        return redirect(url_for("ozon_page", error="Количество должно быть целым числом"))
+    if quantity < 0:
+        return redirect(url_for("ozon_page", error="Количество не может быть отрицательным"))
+
+    product_id = int(product_id)
+    existing = g.db.execute("SELECT * FROM ozon_stock WHERE product_id = ?", (product_id,)).fetchone()
+    old_quantity = existing["quantity"] if existing else 0
+
+    if existing:
+        g.db.execute(
+            "UPDATE ozon_stock SET quantity = ?, updated_at = ?, updated_by_id = ? WHERE product_id = ?",
+            (quantity, now_iso(), user["id"], product_id),
+        )
+    else:
+        g.db.execute(
+            "INSERT INTO ozon_stock (product_id, quantity, updated_at, updated_by_id) VALUES (?, ?, ?, ?)",
+            (product_id, quantity, now_iso(), user["id"]),
+        )
+    g.db.execute(
+        "INSERT INTO ozon_stock_log (product_id, old_quantity, new_quantity, comment, created_by_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (product_id, old_quantity, quantity, comment or None, user["id"], now_iso()),
+    )
+    g.db.commit()
+    return redirect(url_for("ozon_page", ok="Остаток на Ozon обновлён"))
 
 
 # -------------------------------------------------------------------- users
