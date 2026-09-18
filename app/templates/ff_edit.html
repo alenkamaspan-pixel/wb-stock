@@ -15,6 +15,16 @@
         <option value="0" {% if not ff.is_active %}selected{% endif %}>Нет</option>
       </select>
     </div>
+    <div style="margin-bottom:14px;">
+      <label style="display:inline-flex; align-items:center; gap:6px; font-size:14px; color:var(--text); margin-bottom:0;">
+        <input type="checkbox" name="is_ozon_fbo_source" value="1" {% if ff.is_ozon_fbo_source %}checked{% endif %}>
+        Источник поставок Ozon FBO
+      </label>
+      <p class="muted" style="margin-top:4px;">
+        Откуда физически уезжают ваши поставки на Ozon FBO — Ozon этого не знает, поэтому отмечаете сами.
+        Можно отметить только один ФФ: если поставите здесь, у остальных галочка снимется автоматически.
+      </p>
+    </div>
     <div style="margin-bottom:16px;">
       <label>Склады, которые обслуживает этот ФФ</label>
       {% for w in warehouses %}

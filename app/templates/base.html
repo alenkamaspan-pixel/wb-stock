@@ -35,6 +35,7 @@
             <a href="/settings">Настройки</a>
             {% if user.role == 'admin' %}<a href="/users">Пользователи</a>{% endif %}
             {% if user.role == 'admin' %}<a href="/wb-diagnostics">Диагностика WB</a>{% endif %}
+            {% if user.role == 'admin' %}<a href="/ozon-diagnostics">Диагностика Ozon</a>{% endif %}
             <a href="/logout">Выйти</a>
           </div>
         </div>

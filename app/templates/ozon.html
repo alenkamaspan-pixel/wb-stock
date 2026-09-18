@@ -1,14 +1,116 @@
 {% extends "base.html" %}
 {% block title %}Ozon{% endblock %}
 {% block content %}
-<h1>Остатки на Ozon</h1>
-<p class="muted">
-  Отдельно от WB и пока полностью вручную — подключения к Ozon API нет, эти цифры вы вводите сами.
-  Никак не влияет на остатки WB и не участвует в синхронизации.
-</p>
+<h1>Ozon</h1>
+
+{% if not api_configured %}
+<div class="card">
+  <p class="muted">
+    Ключи Ozon (OZON_CLIENT_ID / OZON_API_KEY) ещё не заданы в переменных окружения — автосинхронизация
+    FBS и загрузка поставок FBO пока недоступны. Ниже видны только старые остатки, введённые вручную.
+  </p>
+</div>
+{% else %}
 
 <div class="card">
-  <h2>Итого на Ozon: {{ total }} шт.</h2>
+  <h2>Продажи FBS</h2>
+  <p class="muted">
+    Синхронизируются автоматически — новое отправление сразу списывает остаток со склада, на который
+    замаплен склад отгрузки Ozon (см. «ID склада в Ozon (FBS)» на странице «Склады»); отменённое —
+    возвращает. Так же, как заказы WB.
+  </p>
+  {% if fbs_warehouses %}
+  <p class="muted">Замаплено складов Ozon FBS: {{ fbs_warehouses | length }}
+    ({{ fbs_warehouses | map(attribute='name') | join(', ') }}).</p>
+  {% else %}
+  <p class="muted">Ни один склад ещё не привязан к ID склада Ozon — заказы будут падать в лог с ошибкой
+    сопоставления. Привяжите на странице «Склады».</p>
+  {% endif %}
+  {% if can_edit %}
+  <form method="post" action="/ozon/sync/fbs-run-now">
+    <button type="submit">Синхронизировать сейчас</button>
+  </form>
+  {% endif %}
+
+  {% if postings_recent %}
+  <table style="margin-top:16px;">
+    <thead><tr><th>Отправление</th><th>Товар</th><th>Кол-во</th><th>Статус</th><th>Списано</th><th>Когда</th></tr></thead>
+    <tbody>
+      {% for o in postings_recent %}
+      <tr>
+        <td>{{ o.posting_number }}</td>
+        <td>{{ o.product_name or '—' }}</td>
+        <td>{{ o.quantity }}</td>
+        <td>{{ o.status or '—' }}</td>
+        <td>{{ 'да' if o.stock_deducted else 'нет' }}</td>
+        <td class="muted">{{ o.created_at | dtfmt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top:16px;">Отправлений пока не было (или ещё не синхронизировали).</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Поставки FBO</h2>
+  <p class="muted">
+    Состав и количество вносит менеджер в личном кабинете Ozon — здесь только читаем готовый список и
+    переносим товар на виртуальный склад «Ozon FBO» одной кнопкой. Каждую поставку можно загрузить
+    только один раз.
+  </p>
+  {% if fbo_source_ff %}
+  <p class="muted">ФФ-источник поставок: <span class="ff-tag ff-color-{{ fbo_source_ff.id % 6 }}">{{ fbo_source_ff.name }}</span></p>
+  {% else %}
+  <p class="muted">ФФ-источник поставок ещё не отмечен — загрузка поставок будет недоступна, пока не
+    отметите его на странице «Склады» (редактирование нужного ФФ).</p>
+  {% endif %}
+  {% if can_edit %}
+  <form method="post" action="/ozon/supplies/refresh">
+    <button type="submit" class="btn-secondary">Обновить список поставок</button>
+  </form>
+  {% endif %}
+
+  {% if supplies %}
+  <table style="margin-top:16px;">
+    <thead><tr><th>Поставка</th><th>Статус в Ozon</th><th>Позиций</th><th>Штук</th><th>Загружена</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for s in supplies %}
+      <tr>
+        <td>{{ s.supply_order_id }}</td>
+        <td>{{ s.status or '—' }}</td>
+        <td>{{ s.items_count }}</td>
+        <td>{{ s.total_qty }}</td>
+        <td>{{ 'да, ' ~ (s.loaded_at | dtfmt) if s.loaded else 'нет' }}</td>
+        {% if can_edit %}
+        <td>
+          {% if not s.loaded %}
+          <form method="post" action="/ozon/supplies/{{ s.id }}/load" style="display:inline;"
+                onsubmit="return confirm('Загрузить поставку {{ s.supply_order_id }}? Перенесёт весь её состав на «Ozon FBO». Действие одноразовое.');">
+            <button type="submit" style="padding:4px 10px; font-size:13px;">Загрузить поставку</button>
+          </form>
+          {% else %}
+          <span class="muted">уже загружена</span>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top:16px;">Поставок пока нет (или ещё не обновляли список).</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Старые остатки Ozon (введены вручную до перехода на API) — итого: {{ total }} шт.</h2>
+  <p class="muted">
+    Оставлено для сверки при переходе — больше не источник истины, живой остаток теперь считается
+    из движений выше. Уберём этот блок отдельно, когда сверка будет закончена.
+  </p>
   <table>
     <thead><tr><th>SKU</th><th>Название</th><th>Остаток</th>{% if can_edit %}<th>Обновлено</th><th></th>{% endif %}</tr></thead>
     <tbody>

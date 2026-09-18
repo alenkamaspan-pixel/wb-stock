@@ -55,6 +55,7 @@
   <form class="inline" method="post" action="/warehouses/new">
     <div><label>Название (внутреннее)</label><input type="text" name="name" required></div>
     <div><label>ID склада в WB</label><input type="number" name="wb_warehouse_id"></div>
+    <div><label>ID склада в Ozon (FBS)</label><input type="number" name="ozon_warehouse_id"></div>
     <div><label>ФФ (необязательно)</label>
       <select name="fulfillment_center_id">
         <option value="">— без ФФ —</option>
@@ -78,12 +79,13 @@
 <div class="card">
   <h2>Список складов</h2>
   <table>
-    <thead><tr><th>Название</th><th>ID в WB</th><th>ФФ</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>Название</th><th>ID в WB</th><th>ID в Ozon</th><th>ФФ</th><th>Активен</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for w in warehouses %}
       <tr>
         <td>{{ w.name }}</td>
         <td class="muted">{{ w.wb_warehouse_id or '—' }}</td>
+        <td class="muted">{{ w.ozon_warehouse_id or '—' }}</td>
         <td>
           {% if w.ff_name %}
           {% set ff_color = 'ff-color-' ~ (w.ff_id % 6) %}

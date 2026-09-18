@@ -7,6 +7,7 @@
   <form class="inline" method="post" action="/warehouses/{{ warehouse.id }}/edit">
     <div><label>Название (внутреннее)</label><input type="text" name="name" value="{{ warehouse.name }}" required></div>
     <div><label>ID склада в WB</label><input type="number" name="wb_warehouse_id" value="{{ warehouse.wb_warehouse_id or '' }}"></div>
+    <div><label>ID склада в Ozon (FBS)</label><input type="number" name="ozon_warehouse_id" value="{{ warehouse.ozon_warehouse_id or '' }}"></div>
     <div><label>ФФ</label>
       <select name="fulfillment_center_id">
         <option value="">— без ФФ —</option>

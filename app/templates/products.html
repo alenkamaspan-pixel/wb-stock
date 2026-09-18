@@ -11,16 +11,17 @@
     <div><label>Название</label><input type="text" name="name" required></div>
     <div><label>Артикул WB (nmId)</label><input type="number" name="nm_id"></div>
     <div><label>Штрихкод (barcode)</label><input type="text" name="barcode"></div>
+    <div><label>SKU на Ozon</label><input type="number" name="ozon_sku"></div>
     <button type="submit">Добавить</button>
   </form>
-  <p class="muted">Штрихкод важен: по нему приложение сопоставляет заказы из WB с вашим товаром.</p>
+  <p class="muted">Штрихкод важен: по нему приложение сопоставляет заказы из WB с вашим товаром. SKU Ozon — для заказов и поставок Ozon.</p>
 </div>
 {% endif %}
 
 <div class="card">
   <h2>Список товаров</h2>
   <table>
-    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th><th>SKU Ozon</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for p in products %}
       <tr>
@@ -28,6 +29,7 @@
         <td>{{ p.name }}</td>
         <td>{{ p.nm_id or '—' }}</td>
         <td>{{ p.barcode or '—' }}</td>
+        <td>{{ p.ozon_sku or '—' }}</td>
         {% if can_edit %}
         <td style="white-space:nowrap;">
           <a href="/products/{{ p.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
@@ -55,6 +57,7 @@
   <form class="inline" method="post" action="/products/aliases/new">
     <div><label>Штрихкод карточки-алиаса</label><input type="text" name="alias_barcode"></div>
     <div><label>nmId карточки-алиаса</label><input type="number" name="alias_nm_id"></div>
+    <div><label>SKU карточки-алиаса на Ozon</label><input type="number" name="alias_ozon_sku"></div>
     <div>
       <label>Списывать на товар</label>
       <select name="target_product_id" required>
@@ -68,12 +71,13 @@
 
   {% if aliases %}
   <table style="margin-top:16px;">
-    <thead><tr><th>Штрихкод алиаса</th><th>nmId алиаса</th><th>Списывается на</th><th>Комментарий</th><th></th></tr></thead>
+    <thead><tr><th>Штрихкод алиаса</th><th>nmId алиаса</th><th>SKU Ozon алиаса</th><th>Списывается на</th><th>Комментарий</th><th></th></tr></thead>
     <tbody>
       {% for a in aliases %}
       <tr>
         <td>{{ a.alias_barcode or '—' }}</td>
         <td>{{ a.alias_nm_id or '—' }}</td>
+        <td>{{ a.alias_ozon_sku or '—' }}</td>
         <td>{{ a.target_name }} ({{ a.target_sku }})</td>
         <td>{{ a.comment or '—' }}</td>
         <td>

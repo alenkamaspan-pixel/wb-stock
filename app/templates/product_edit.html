@@ -9,6 +9,7 @@
     <div><label>Название</label><input type="text" name="name" value="{{ product.name }}" required></div>
     <div><label>Артикул WB (nmId)</label><input type="number" name="nm_id" value="{{ product.nm_id or '' }}"></div>
     <div><label>Штрихкод (barcode)</label><input type="text" name="barcode" value="{{ product.barcode or '' }}"></div>
+    <div><label>SKU на Ozon</label><input type="number" name="ozon_sku" value="{{ product.ozon_sku or '' }}"></div>
     <button type="submit">Сохранить</button>
     <a href="/products" class="btn btn-secondary">Отмена</a>
   </form>
