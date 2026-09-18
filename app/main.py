@@ -23,6 +23,9 @@ from app.analytics import (
     get_period_stats, get_daily_series, get_velocity_table, get_product_ranking,
     get_ff_comparison, get_movements_journal, get_filter_options, get_cancellations_table,
 )
+from app import ozon_sync
+from app.ozon_client import OzonClient, OzonApiError
+from app.config import OZON_CLIENT_ID, OZON_API_KEY, OZON_SYNC_INTERVAL_MINUTES
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -647,10 +650,12 @@ def product_new():
     name = request.form["name"].strip()
     nm_id = request.form.get("nm_id", "").strip()
     barcode = request.form.get("barcode", "").strip()
+    ozon_sku = request.form.get("ozon_sku", "").strip()
     try:
         g.db.execute(
-            "INSERT INTO products (sku, nm_id, barcode, name, created_at) VALUES (?, ?, ?, ?, ?)",
-            (sku, int(nm_id) if nm_id else None, barcode or None, name, now_iso()),
+            "INSERT INTO products (sku, nm_id, barcode, ozon_sku, name, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (sku, int(nm_id) if nm_id else None, barcode or None, int(ozon_sku) if ozon_sku else None,
+             name, now_iso()),
         )
         g.db.commit()
     except Exception as e:
@@ -680,16 +685,18 @@ def product_edit(product_id):
     name = request.form["name"].strip()
     nm_id = request.form.get("nm_id", "").strip()
     barcode = request.form.get("barcode", "").strip()
+    ozon_sku = request.form.get("ozon_sku", "").strip()
     try:
         g.db.execute(
-            "UPDATE products SET sku = ?, name = ?, nm_id = ?, barcode = ? WHERE id = ?",
-            (sku, name, int(nm_id) if nm_id else None, barcode or None, product_id),
+            "UPDATE products SET sku = ?, name = ?, nm_id = ?, barcode = ?, ozon_sku = ? WHERE id = ?",
+            (sku, name, int(nm_id) if nm_id else None, barcode or None,
+             int(ozon_sku) if ozon_sku else None, product_id),
         )
         g.db.commit()
     except sqlite3.IntegrityError:
         return redirect(url_for(
             "product_edit_form", product_id=product_id,
-            error="Такой SKU, nmId или штрихкод уже используется другим товаром",
+            error="Такой SKU, nmId, штрихкод или SKU Ozon уже используется другим товаром",
         ))
     return redirect(url_for("products_page", ok="Товар изменён"))
 
@@ -727,18 +734,21 @@ def product_alias_new():
         return redirect(url_for("products_page", error="Недостаточно прав"))
     alias_barcode = request.form.get("alias_barcode", "").strip()
     alias_nm_id = request.form.get("alias_nm_id", "").strip()
+    alias_ozon_sku = request.form.get("alias_ozon_sku", "").strip()
     target_product_id = request.form.get("target_product_id", "").strip()
     comment = request.form.get("comment", "").strip()
-    if not alias_barcode and not alias_nm_id:
-        return redirect(url_for("products_page", error="Укажите штрихкод и/или nmId алиаса"))
+    if not alias_barcode and not alias_nm_id and not alias_ozon_sku:
+        return redirect(url_for("products_page", error="Укажите штрихкод, nmId и/или SKU Ozon алиаса"))
     if not target_product_id:
         return redirect(url_for("products_page", error="Выберите целевой товар"))
     try:
         g.db.execute(
-            "INSERT INTO product_aliases (alias_barcode, alias_nm_id, target_product_id, comment, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO product_aliases "
+            "(alias_barcode, alias_nm_id, alias_ozon_sku, target_product_id, comment, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 alias_barcode or None, int(alias_nm_id) if alias_nm_id else None,
+                int(alias_ozon_sku) if alias_ozon_sku else None,
                 int(target_product_id), comment or None, now_iso(),
             ),
         )
@@ -746,7 +756,7 @@ def product_alias_new():
     except sqlite3.IntegrityError:
         return redirect(url_for(
             "products_page",
-            error="Такой штрихкод или nmId уже используется другим алиасом (или самим товаром)",
+            error="Такой штрихкод, nmId или SKU Ozon уже используется другим алиасом (или самим товаром)",
         ))
     return redirect(url_for("products_page", ok="Алиас добавлен"))
 
@@ -794,13 +804,15 @@ def warehouse_new():
         return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     name = request.form["name"].strip()
     wb_warehouse_id = request.form.get("wb_warehouse_id", "").strip()
+    ozon_warehouse_id = request.form.get("ozon_warehouse_id", "").strip()
     fulfillment_center_id = request.form.get("fulfillment_center_id", "").strip()
     try:
         g.db.execute(
-            "INSERT INTO warehouses (name, wb_warehouse_id, fulfillment_center_id, is_active, created_at) "
-            "VALUES (?, ?, ?, 1, ?)",
+            "INSERT INTO warehouses (name, wb_warehouse_id, ozon_warehouse_id, fulfillment_center_id, "
+            "is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
             (
                 name, int(wb_warehouse_id) if wb_warehouse_id else None,
+                int(ozon_warehouse_id) if ozon_warehouse_id else None,
                 int(fulfillment_center_id) if fulfillment_center_id else None, now_iso(),
             ),
         )
@@ -831,14 +843,16 @@ def warehouse_edit(warehouse_id):
         return redirect(url_for("warehouses_page", error="Недостаточно прав"))
     name = request.form["name"].strip()
     wb_warehouse_id = request.form.get("wb_warehouse_id", "").strip()
+    ozon_warehouse_id = request.form.get("ozon_warehouse_id", "").strip()
     fulfillment_center_id = request.form.get("fulfillment_center_id", "").strip()
     is_active = 1 if request.form.get("is_active") == "1" else 0
     try:
         g.db.execute(
-            "UPDATE warehouses SET name = ?, wb_warehouse_id = ?, fulfillment_center_id = ?, "
-            "is_active = ? WHERE id = ?",
+            "UPDATE warehouses SET name = ?, wb_warehouse_id = ?, ozon_warehouse_id = ?, "
+            "fulfillment_center_id = ?, is_active = ? WHERE id = ?",
             (
                 name, int(wb_warehouse_id) if wb_warehouse_id else None,
+                int(ozon_warehouse_id) if ozon_warehouse_id else None,
                 int(fulfillment_center_id) if fulfillment_center_id else None, is_active, warehouse_id,
             ),
         )
@@ -846,7 +860,7 @@ def warehouse_edit(warehouse_id):
     except sqlite3.IntegrityError:
         return redirect(url_for(
             "warehouse_edit_form", warehouse_id=warehouse_id,
-            error="Такой ID склада в WB уже используется другим складом",
+            error="Такой ID склада в WB или в Ozon уже используется другим складом",
         ))
     return redirect(url_for("warehouses_page", ok="Склад изменён"))
 
@@ -952,9 +966,13 @@ def ff_edit(ff_id):
         return redirect(url_for("warehouses_page", error="ФФ не найден"))
     name = request.form["name"].strip()
     is_active = 1 if request.form.get("is_active") == "1" else 0
+    is_ozon_fbo_source = 1 if request.form.get("is_ozon_fbo_source") == "1" else 0
+    if is_ozon_fbo_source:
+        # Источник поставок Ozon FBO — только один сразу, снимаем у остальных.
+        g.db.execute("UPDATE fulfillment_centers SET is_ozon_fbo_source = 0 WHERE id != ?", (ff_id,))
     g.db.execute(
-        "UPDATE fulfillment_centers SET name = ?, is_active = ? WHERE id = ?",
-        (name, is_active, ff_id),
+        "UPDATE fulfillment_centers SET name = ?, is_active = ?, is_ozon_fbo_source = ? WHERE id = ?",
+        (name, is_active, is_ozon_fbo_source, ff_id),
     )
     # Склады, отмеченные галочкой в форме — привязываем к этому ФФ; те, что
     # раньше были привязаны именно к нему, но галочку сняли — отвязываем.
@@ -991,15 +1009,42 @@ def ff_delete(ff_id):
 
 
 # ---------------------------------------------------------------------- ozon
-# 28.08.2026: остатки на Ozon — отдельно от WB и пока полностью вручную, без
-# подключения к Ozon API. Сознательно НЕ через stock_movements (это не
-# журнал заказов/приходов WB, а просто текущее число по каждому товару,
-# которое вводит человек) — чтобы не перепутать с WB-остатками и не задеть
-# их логику синхронизации. История правок — в ozon_stock_log, только для
-# прозрачности (кто и когда поменял), возврата назад через неё пока нет.
+# 18.09.2026: реальная интеграция с Ozon API (FBS-продажи автосинхронизируются,
+# FBO-поставки читаются и загружаются по кнопке — см. app/ozon_sync.py).
+# Старый ручной блок ниже (ozon_stock/ozon_stock_log, до 18.09.2026) НАРОЧНО
+# оставлен как есть и продолжает работать — это позволяет Алёне свериться со
+# своими последними введёнными вручную цифрами при переходе. Уберём его
+# отдельным шагом, когда она подтвердит, что сверка закончена.
 @app.route("/ozon")
 @login_required
 def ozon_page():
+    api_configured = bool(OZON_CLIENT_ID and OZON_API_KEY)
+    fbo_source_ff = g.db.execute(
+        "SELECT * FROM fulfillment_centers WHERE is_ozon_fbo_source = 1 AND is_active = 1"
+    ).fetchone()
+    fbs_warehouses = g.db.execute(
+        "SELECT * FROM warehouses WHERE ozon_warehouse_id IS NOT NULL ORDER BY name"
+    ).fetchall()
+    supplies = g.db.execute(
+        """
+        SELECT s.*, COUNT(i.id) AS items_count, COALESCE(SUM(i.quantity), 0) AS total_qty
+        FROM ozon_supplies s
+        LEFT JOIN ozon_supply_items i ON i.supply_id = s.id
+        GROUP BY s.id
+        ORDER BY s.created_at DESC
+        """
+    ).fetchall()
+    postings_recent = g.db.execute(
+        """
+        SELECT o.*, p.name AS product_name
+        FROM ozon_postings o
+        LEFT JOIN products p ON p.id = o.product_id
+        ORDER BY o.created_at DESC
+        LIMIT 30
+        """
+    ).fetchall()
+
+    # старый ручной блок (до 18.09.2026) — см. комментарий выше
     rows = g.db.execute(
         """
         SELECT p.id AS product_id, p.sku, p.name,
@@ -1010,9 +1055,100 @@ def ozon_page():
         """
     ).fetchall()
     total = sum(r["quantity"] for r in rows)
+
     return render_template(
         "ozon.html", rows=rows, total=total, can_edit=can_edit(get_current_user()),
+        api_configured=api_configured, fbo_source_ff=fbo_source_ff, fbs_warehouses=fbs_warehouses,
+        supplies=supplies, postings_recent=postings_recent,
     )
+
+
+@app.route("/ozon/sync/fbs-run-now", methods=["POST"])
+@login_required
+def ozon_sync_fbs_run_now():
+    if not can_edit(get_current_user()):
+        return redirect(url_for("ozon_page", error="Недостаточно прав"))
+    if not (OZON_CLIENT_ID and OZON_API_KEY):
+        return redirect(url_for(
+            "ozon_page", error="Не заданы OZON_CLIENT_ID / OZON_API_KEY — добавьте их в переменные окружения",
+        ))
+    try:
+        result = ozon_sync.sync_fbs_once(OzonClient())
+    except OzonApiError as e:
+        return redirect(url_for("ozon_page", error=f"Ошибка синхронизации Ozon FBS: {e}"))
+    if result["status"] == "error":
+        return redirect(url_for("ozon_page", error=f"Ошибка синхронизации Ozon FBS: {result['message']}"))
+    return redirect(url_for(
+        "ozon_page",
+        ok=f"Синхронизация FBS выполнена: отправлений {result['postings_fetched']}, "
+           f"движений {result['movements_created']}, отмен возвращено {result['cancelled_reversed']}",
+    ))
+
+
+@app.route("/ozon/supplies/refresh", methods=["POST"])
+@login_required
+def ozon_supplies_refresh():
+    if not can_edit(get_current_user()):
+        return redirect(url_for("ozon_page", error="Недостаточно прав"))
+    if not (OZON_CLIENT_ID and OZON_API_KEY):
+        return redirect(url_for(
+            "ozon_page", error="Не заданы OZON_CLIENT_ID / OZON_API_KEY — добавьте их в переменные окружения",
+        ))
+    result = ozon_sync.refresh_supplies(OzonClient())
+    if result["errors"]:
+        return redirect(url_for("ozon_page", error="; ".join(result["errors"])))
+    return redirect(url_for("ozon_page", ok=f"Список поставок обновлён (новых: {result['discovered']})"))
+
+
+@app.route("/ozon/supplies/<int:supply_id>/load", methods=["POST"])
+@login_required
+def ozon_supply_load(supply_id):
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("ozon_page", error="Недостаточно прав"))
+    result = ozon_sync.load_supply(supply_id, user["id"])
+    if not result["ok"]:
+        return redirect(url_for("ozon_page", error=result["error"]))
+    return redirect(url_for("ozon_page", ok=f"Поставка загружена: позиций перемещено {result['items_moved']}"))
+
+
+@app.route("/ozon-diagnostics")
+@login_required
+def ozon_diagnostics_page():
+    """Технический раздел только для чтения — по одному живому вызову
+    каждого метода app/ozon_client.py, сырой ответ Ozon как есть. Нужен
+    ровно один раз (плюс когда Ozon поменяет формат): сверить пути и поля,
+    которые в ozon_client.py собраны по документации, а не по реальному
+    ответу (в песочнице, где писался этот код, не было сетевого доступа до
+    api-seller.ozon.ru — см. предупреждение вверху app/ozon_client.py).
+    Ничего не пишет ни в нашу базу, ни тем более обратно в Ozon. Доступен
+    только администратору."""
+    user = get_current_user()
+    if not is_admin(user):
+        return redirect(url_for("dashboard", error="Недостаточно прав"))
+    if not (OZON_CLIENT_ID and OZON_API_KEY):
+        return redirect(url_for(
+            "ozon_page", error="Не заданы OZON_CLIENT_ID / OZON_API_KEY — сначала добавьте их в переменные окружения",
+        ))
+
+    import json as _json
+    client = OzonClient()
+    results = []
+
+    def _call(title, fn):
+        try:
+            data = fn()
+            results.append({"title": title, "ok": True, "body": _json.dumps(data, ensure_ascii=False, indent=2)})
+        except OzonApiError as e:
+            results.append({"title": title, "ok": False, "body": str(e)})
+        except Exception as e:
+            results.append({"title": title, "ok": False, "body": f"Непредвиденная ошибка: {e}"})
+
+    _call("Склады FBS (/v1/warehouse/list)", client.get_fbs_warehouses)
+    _call("Ещё не собранные отправления FBS (/v3/posting/fbs/unfulfilled/list)", client.get_unfulfilled_postings)
+    _call("Список ID поставок FBO (/v2/supply-order/list)", client.list_supply_orders)
+
+    return render_template("ozon_diagnostics.html", results=results)
 
 
 @app.route("/ozon/set", methods=["POST"])
@@ -1153,11 +1289,12 @@ def user_new():
 @app.route("/admin/reset-stock", methods=["POST"])
 @login_required
 def admin_reset_stock():
-    """Полный сброс остатков: удаляет ВСЕ движения (и внесённые вручную, и
-    созданные синхронизацией с WB) и всю историю заказов WB — чтобы начать
-    учёт заново с чистого листа. Товары, склады, ФФ и пользователи не
-    затрагиваются. Доступно только администратору, требует явного
-    подтверждения — действие необратимо."""
+    """Полный сброс остатков: удаляет ВСЕ движения (внесённые вручную и
+    созданные синхронизацией с WB и с Ozon), всю историю заказов WB и Ozon
+    (FBS-отправления и FBO-поставки) — чтобы начать учёт заново с чистого
+    листа. Товары, склады, ФФ и пользователи не затрагиваются. Доступно
+    только администратору, требует явного подтверждения — действие
+    необратимо."""
     user = get_current_user()
     if not is_admin(user):
         return redirect(url_for("dashboard", error="Сбросить остатки может только администратор"))
@@ -1169,10 +1306,13 @@ def admin_reset_stock():
         ))
     g.db.execute("DELETE FROM stock_movements")
     g.db.execute("DELETE FROM wb_orders")
+    g.db.execute("DELETE FROM ozon_postings")
+    g.db.execute("DELETE FROM ozon_supply_items")
+    g.db.execute("DELETE FROM ozon_supplies")
     g.db.commit()
     return redirect(url_for(
         "users_page",
-        ok="Готово: все остатки, движения и история заказов WB обнулены. "
+        ok="Готово: все остатки, движения и история заказов WB и Ozon обнулены. "
            "Товары, склады, ФФ и пользователи не тронуты — можно вносить приход заново.",
     ))
 
@@ -1202,9 +1342,24 @@ def _scheduler_loop():
             pass  # ошибки уже пишутся в sync_runs.message; фоновый поток не должен падать
 
 
+def _ozon_scheduler_loop():
+    """Отдельный поток и отдельный интервал от WB (см. OZON_SYNC_INTERVAL_MINUTES
+    в config.py) — сбой или лимиты одной площадки не должны задерживать другую.
+    Синхронизирует только FBS-продажи; FBO-поставки НЕ трогает — их читает и
+    грузит только явная кнопка на странице «Ozon» (см. ozon_sync.load_supply)."""
+    while True:
+        time.sleep(OZON_SYNC_INTERVAL_MINUTES * 60)
+        if not (OZON_CLIENT_ID and OZON_API_KEY):
+            continue  # ключи ещё не заданы — тихо ждём следующего интервала
+        try:
+            ozon_sync.sync_fbs_once()
+        except Exception:
+            pass  # как и для WB — фоновый поток не должен падать из-за сбоя одной синхронизации
+
+
 def start_scheduler():
-    thread = threading.Thread(target=_scheduler_loop, daemon=True)
-    thread.start()
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
+    threading.Thread(target=_ozon_scheduler_loop, daemon=True).start()
 
 
 bootstrap()

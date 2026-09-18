@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS fulfillment_centers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     is_active INTEGER NOT NULL DEFAULT 1,
+    -- 18.09.2026: ФФ, откуда физически уезжают поставки на Ozon FBO — нужен,
+    -- чтобы при нажатии «Загрузить поставку» знать, с какого склада списывать
+    -- (см. app/ozon_sync.py). Ozon API не сообщает, кто физически собрал
+    -- поставку — это чисто внутреннее знание продавца, поэтому не берём
+    -- ниоткуда автоматически, а даёте отметить сами на странице «Склады».
+    -- Ровно у одного активного ФФ должен быть этот флаг — если у Алёны
+    -- появится второй источник поставок Ozon, логику надо будет расширить.
+    is_ozon_fbo_source INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -41,8 +49,15 @@ CREATE TABLE IF NOT EXISTS warehouses (
     -- ID склада в WB — нужен только чтобы сопоставлять входящие заказы с
     -- вашим складом. Приложение никогда не пишет по этому ID обратно в WB.
     wb_warehouse_id INTEGER UNIQUE,
+    -- 18.09.2026: то же самое, но для Ozon FBS — ID склада отгрузки из
+    -- личного кабинета Ozon (Настройки → FBS → склад). У одного склада
+    -- заполняется только одно из двух полей (wb_warehouse_id ЛИБО
+    -- ozon_warehouse_id) — это разные площадки. Виртуальный склад
+    -- «Ozon FBO» (см. app/ozon_sync.py) — отдельная строка без обоих полей
+    -- и без fulfillment_center_id (общий, не привязан ни к одному ФФ).
+    ozon_warehouse_id INTEGER UNIQUE,
     -- Один физический ФФ (фулфилмент-центр) может обслуживать сразу
-    -- несколько таких складов (регионов WB) — см. fulfillment_centers.
+    -- несколько таких складов (регионов WB/Ozon) — см. fulfillment_centers.
     fulfillment_center_id INTEGER REFERENCES fulfillment_centers(id),
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
@@ -53,6 +68,12 @@ CREATE TABLE IF NOT EXISTS products (
     sku TEXT UNIQUE NOT NULL,
     nm_id INTEGER UNIQUE,
     barcode TEXT UNIQUE,
+    -- 18.09.2026: SKU товара на Ozon (числовой идентификатор карточки в
+    -- личном кабинете Ozon, не путать с вашим sku выше) — по нему
+    -- сопоставляются заказы FBS и позиции поставок FBO. offer_id (ваш
+    -- собственный артикул на Ozon) тоже приходит в ответах API, но как
+    -- текст — можно не хранить отдельно, для сопоставления достаточно SKU.
+    ozon_sku INTEGER UNIQUE,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -109,10 +130,14 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 -- CR-9690, просто вторая карточка на WB). Если для входящего заказа найден
 -- алиас по barcode/nm_id — списание идёт сразу на target_product_id, у самой
 -- карточки-алиаса свой остаток больше не ведётся. См. sync._find_or_create_product.
+-- 18.09.2026: та же механика распространена на Ozon — alias_ozon_sku работает
+-- совершенно так же, только ключом служит SKU карточки на Ozon, см.
+-- ozon_sync._find_or_create_product.
 CREATE TABLE IF NOT EXISTS product_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     alias_barcode TEXT UNIQUE,
     alias_nm_id INTEGER UNIQUE,
+    alias_ozon_sku INTEGER UNIQUE,
     target_product_id INTEGER NOT NULL REFERENCES products(id),
     comment TEXT,
     created_at TEXT NOT NULL
@@ -141,6 +166,59 @@ CREATE TABLE IF NOT EXISTS ozon_stock_log (
     created_by_id INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL
 );
+
+-- 18.09.2026: реальная интеграция с Ozon API (пришла на смену ручным
+-- ozon_stock/ozon_stock_log выше — те таблицы оставлены как есть, только для
+-- разовой сверки остатков при переходе, дальше не используются). Два разных
+-- потока: FBS-заказы (ozon_postings, авто-списание, зеркало wb_orders) и
+-- FBO-поставки (ozon_supplies/ozon_supply_items, загрузка по кнопке, зеркало
+-- идеи с warehouses.import-from-wb, но с защитой от повторной загрузки).
+-- Один posting_number (отправление) у Ozon может содержать НЕСКОЛЬКО разных
+-- товаров сразу (в отличие от заказа WB, где одна позиция = одна строка) —
+-- поэтому ключ строки здесь не сам posting_number, а пара
+-- (posting_number, line_no) — line_no это просто порядковый номер товара
+-- внутри массива products в ответе Ozon.
+CREATE TABLE IF NOT EXISTS ozon_postings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    posting_number TEXT NOT NULL,
+    line_no INTEGER NOT NULL DEFAULT 0,
+    ozon_sku INTEGER,
+    offer_id TEXT,
+    ozon_warehouse_id INTEGER,
+    product_id INTEGER,
+    warehouse_id INTEGER,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    status TEXT DEFAULT 'new',
+    stock_deducted INTEGER NOT NULL DEFAULT 0,
+    raw_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ozon_supplies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supply_order_id TEXT UNIQUE NOT NULL,
+    status TEXT,
+    loaded INTEGER NOT NULL DEFAULT 0,
+    loaded_at TEXT,
+    loaded_by_id INTEGER REFERENCES users(id),
+    raw_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ozon_supply_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supply_id INTEGER NOT NULL REFERENCES ozon_supplies(id),
+    ozon_sku INTEGER,
+    offer_id TEXT,
+    name_hint TEXT,
+    quantity INTEGER NOT NULL,
+    product_id INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ozon_postings_line
+    ON ozon_postings(posting_number, line_no);
 """
 
 
@@ -198,6 +276,38 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "avatar_data_url" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN avatar_data_url TEXT")
         conn.commit()
+
+    # 18.09.2026: колонки под интеграцию с Ozon — на уже задеплоенной базе их
+    # ещё нет, добавляем точечно, как и остальные миграции здесь.
+    ff_cols = {row["name"] for row in conn.execute("PRAGMA table_info(fulfillment_centers)").fetchall()}
+    if "is_ozon_fbo_source" not in ff_cols:
+        conn.execute(
+            "ALTER TABLE fulfillment_centers ADD COLUMN is_ozon_fbo_source INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+
+    # Примечание: SQLite не разрешает ALTER TABLE ... ADD COLUMN с UNIQUE —
+    # добавляем колонку обычной, а уникальность обеспечиваем отдельным
+    # индексом ниже (эффект тот же).
+    wh_cols = {row["name"] for row in conn.execute("PRAGMA table_info(warehouses)").fetchall()}
+    if "ozon_warehouse_id" not in wh_cols:
+        conn.execute("ALTER TABLE warehouses ADD COLUMN ozon_warehouse_id INTEGER")
+        conn.commit()
+
+    product_cols = {row["name"] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+    if "ozon_sku" not in product_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN ozon_sku INTEGER")
+        conn.commit()
+
+    alias_cols = {row["name"] for row in conn.execute("PRAGMA table_info(product_aliases)").fetchall()}
+    if "alias_ozon_sku" not in alias_cols:
+        conn.execute("ALTER TABLE product_aliases ADD COLUMN alias_ozon_sku INTEGER")
+        conn.commit()
+
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_warehouses_ozon_id ON warehouses(ozon_warehouse_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_ozon_sku ON products(ozon_sku)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_aliases_ozon_sku ON product_aliases(alias_ozon_sku)")
+    conn.commit()
 
 
 def now_iso() -> str:

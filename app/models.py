@@ -22,5 +22,6 @@ class MovementType:
 
 
 class MovementSource:
-    MANUAL = "manual"      # внесено человеком через интерфейс
-    WB_SYNC = "wb_sync"    # создано автоматически синхронизацией с WB
+    MANUAL = "manual"          # внесено человеком через интерфейс
+    WB_SYNC = "wb_sync"        # создано автоматически синхронизацией с WB
+    OZON_SYNC = "ozon_sync"    # создано автоматически синхронизацией с Ozon (FBS-продажи, загрузка FBO-поставки)

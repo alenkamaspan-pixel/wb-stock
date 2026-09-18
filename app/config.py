@@ -19,7 +19,16 @@ WB_STATISTICS_TOKEN = _get("WB_STATISTICS_TOKEN")
 WB_MARKETPLACE_BASE_URL = _get("WB_MARKETPLACE_BASE_URL", "https://marketplace-api.wildberries.ru")
 WB_STATISTICS_BASE_URL = _get("WB_STATISTICS_BASE_URL", "https://statistics-api.wildberries.ru")
 
+# 18.09.2026: интеграция с Ozon (Client-Id + Api-Key из личного кабинета,
+# Настройки → Seller API) — см. app/ozon_client.py.
+OZON_CLIENT_ID = _get("OZON_CLIENT_ID")
+OZON_API_KEY = _get("OZON_API_KEY")
+OZON_BASE_URL = _get("OZON_BASE_URL", "https://api-seller.ozon.ru")
+
 SYNC_INTERVAL_MINUTES = int(_get("SYNC_INTERVAL_MINUTES", "20"))
+# Ozon синкается отдельным интервалом (свой лимит запросов у Ozon, и не хочется,
+# чтобы сбой одной площадки задерживал синхронизацию другой).
+OZON_SYNC_INTERVAL_MINUTES = int(_get("OZON_SYNC_INTERVAL_MINUTES", "20"))
 
 SECRET_KEY = _get("SECRET_KEY", "dev-only-insecure-key")
 
