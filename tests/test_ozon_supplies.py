@@ -72,16 +72,17 @@ conn.close()
 
 
 class FakeClient:
-    def __init__(self, bundle_items=None):
+    def __init__(self, bundle_items=None, supply_order_id=42):
         self._bundle_items = bundle_items if bundle_items is not None else [
             {"sku": 111, "offer_id": "a", "quantity": 30, "name": "Товар A"}
         ]
+        self._supply_order_id = supply_order_id
 
     def list_supply_orders(self, states=None, limit=100):
-        return [42]
+        return [self._supply_order_id]
 
     def get_supply_orders_info(self, order_ids):
-        return [{"supply_order_id": 42, "state": "CREATED", "bundle_id": "B1"}]
+        return [{"supply_order_id": self._supply_order_id, "state": "CREATED", "bundle_id": "B1"}]
 
     def get_supply_bundle(self, bundle_ids):
         return self._bundle_items
@@ -137,6 +138,39 @@ r2 = ozon_sync.refresh_supplies(FakeClient(bundle_items=[
 conn = get_conn()
 items_after = conn.execute("SELECT * FROM ozon_supply_items WHERE supply_id=?", (supply["id"],)).fetchall()
 check("Состав уже загруженной поставки не переписан (всё ещё 30, не 999)", items_after[0]["quantity"] == 30)
+conn.close()
+
+# --- 6) позиция поставки со sku, который уже занят ДРУГОЙ (WB) карточкой
+# без ozon_sku — раньше падало с "UNIQUE constraint failed: products.sku"
+# (живой сбой на поставке #124909611, 20.09.2026) и позиция терялась.
+# Теперь такая WB-карточка должна переиспользоваться (донаполняется
+# ozon_sku), а не падать.
+conn = get_conn()
+conn.execute(
+    "INSERT INTO products (sku, name, created_at) VALUES ('wb-only-sku', 'Товар B (только WB)', ?)", (now_iso(),)
+)
+wb_only_product_id = conn.execute("SELECT id FROM products WHERE sku='wb-only-sku'").fetchone()["id"]
+conn.commit()
+conn.close()
+
+r3 = ozon_sync.refresh_supplies(FakeClient(
+    bundle_items=[{"sku": 222, "offer_id": "wb-only-sku", "quantity": 7, "name": "Товар B"}],
+    supply_order_id=43,
+))
+check("Поставка с коллизией sku: без падения (discovered=1)", r3["discovered"] == 1)
+check("Поставка с коллизией sku: без ошибок в отчёте", not r3.get("errors"))
+conn = get_conn()
+supply2 = conn.execute("SELECT * FROM ozon_supplies WHERE supply_order_id='43' ORDER BY id DESC LIMIT 1").fetchone()
+items2 = conn.execute("SELECT * FROM ozon_supply_items WHERE supply_id=?", (supply2["id"],)).fetchall()
+check("Позиция с коллизией sku не потеряна (1 позиция, 7 шт)", len(items2) == 1 and items2[0]["quantity"] == 7)
+check(
+    "Позиция привязана к УЖЕ существующей WB-карточке (переиспользована, не задублирована)",
+    items2[0]["product_id"] == wb_only_product_id,
+)
+product_after = conn.execute("SELECT * FROM products WHERE id = ?", (wb_only_product_id,)).fetchone()
+check("Существующей WB-карточке donaполнен ozon_sku (222)", product_after["ozon_sku"] == 222)
+same_sku_count = conn.execute("SELECT COUNT(*) AS c FROM products WHERE sku='wb-only-sku'").fetchone()["c"]
+check("Дубля карточки НЕ создано (ровно одна с этим sku)", same_sku_count == 1)
 conn.close()
 
 print()
