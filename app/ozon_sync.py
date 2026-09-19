@@ -61,9 +61,37 @@ def _find_or_create_product(conn: sqlite3.Connection, ozon_sku, offer_id, name_h
     if product:
         return product["id"]
 
-    # Неизвестный на Ozon товар (нет ни в products.ozon_sku, ни в алиасах) —
-    # заготовка, чтобы ничего не потерять, донастроить можно на «Товары».
+    # ДВЕНАДЦАТАЯ ПРАВКА (20.09.2026, после живого сбоя на поставке
+    # #124909611 — «UNIQUE constraint failed: products.sku»): раньше, если
+    # карточки с таким ozon_sku ещё не было, код сразу пытался СОЗДАТЬ новую
+    # со sku=offer_id — и падал, если этот sku уже занят ДРУГОЙ карточкой
+    # (например WB-карточкой с тем же артикулом продавца, заведённой
+    # раньше и без привязки к ozon_sku). Позиция поставки из-за этого molча
+    # терялась (перехватывалась только try/except вокруг всего товара в
+    # refresh_supplies, см. ниже). Теперь сначала ищем по offer_id как по
+    # sku: если такая карточка уже есть и у нее ещё нет своего ozon_sku (или
+    # он уже совпадает) — дозаполняем ozon_sku и переиспользуем именно её
+    # (то же самое consolidation, что мы вручную делали для WB+Ozon карточек
+    # этой сессией). Если у найденной карточки уже ЕСТЬ другой, отличный
+    # ozon_sku — это не та же самая позиция, поэтому её не трогаем и
+    # создаём новую карточку с заведомо уникальным sku, чтобы позиция не
+    # терялась и ничего чужого тоже не задело.
+    if offer_id:
+        product = conn.execute("SELECT * FROM products WHERE sku = ?", (offer_id,)).fetchone()
+        if product and (not product["ozon_sku"] or product["ozon_sku"] == ozon_sku):
+            if ozon_sku and not product["ozon_sku"]:
+                conn.execute("UPDATE products SET ozon_sku = ? WHERE id = ?", (ozon_sku, product["id"]))
+            return product["id"]
+
+    # Неизвестный на Ozon товар (нет ни в products.ozon_sku, ни в алиасах,
+    # ни переиспользуемой карточки по sku) — заготовка, чтобы ничего не
+    # потерять, донастроить можно на «Товары».
     sku = offer_id or (f"ozon-{ozon_sku}" if ozon_sku else f"unknown-ozon-{dt.datetime.utcnow().timestamp()}")
+    if conn.execute("SELECT 1 FROM products WHERE sku = ?", (sku,)).fetchone():
+        # sku занят чужой карточкой с другим ozon_sku (см. правку выше) —
+        # не создаём дубль с падением по UNIQUE, а делаем sku заведомо
+        # уникальным, не теряя позицию поставки.
+        sku = f"{sku}-ozon-{ozon_sku or 'unk'}"
     cur = conn.execute(
         "INSERT INTO products (sku, ozon_sku, name, created_at) VALUES (?, ?, ?, ?)",
         (sku, ozon_sku, name_hint or sku, now_iso()),
