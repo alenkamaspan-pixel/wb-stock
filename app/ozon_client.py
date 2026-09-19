@@ -207,11 +207,15 @@ class OzonClient:
         способ обойти "нельзя 0" у protobuf-enum'ов, когда не известно
         точное имя. Если и это не то значение — правильный ответ будет
         видно прямо в следующей ошибке от /ozon-diagnostics (Ozon обычно
-        подсказывает допустимый диапазон/список в самом сообщении)."""
+        подсказывает допустимый диапазон/список в самом сообщении).
+
+        ЧЕТВЁРТАЯ ПРАВКА (после /ozon-diagnostics): sort_by=1 эту ошибку
+        снял, но вылезла следующая — "SupplyOrderListRequest.Filter: value
+        is required". То есть filter обязателен даже при отсутствии states
+        (раньше он просто не передавался вовсе) — теперь всегда шлём хотя
+        бы пустой объект {}."""
         limit = max(1, min(int(limit), 100))
-        body: dict = {"limit": limit, "sort_by": 1}
-        if states:
-            body["filter"] = {"states": states}
+        body: dict = {"limit": limit, "sort_by": 1, "filter": {"states": states} if states else {}}
         data = self._post("/v3/supply-order/list", body)
         result = (data or {}).get("result", data or {})
         raw_ids = (
