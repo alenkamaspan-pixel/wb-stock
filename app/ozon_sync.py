@@ -287,7 +287,23 @@ def refresh_supplies(client: OzonClient | None = None) -> dict:
     правки состав по-прежнему не подтягивается — на /ozon-diagnostics
     добавлен сырой, необработанный ответ Ozon по обоим методам
     (get_supply_orders_info_raw, get_supply_bundle_raw), там будет видно
-    точную структуру, и это можно будет поправить прицельно, без гадания."""
+    точную структуру, и это можно будет поправить прицельно, без гадания.
+
+    ДЕВЯТАЯ ПРАВКА (после того, как «Обновить список поставок» отдал
+    голую страницу «Internal Server Error» вместо обычного сообщения об
+    ошибке): раньше здесь ловился только OzonApiError — то есть падение
+    самого HTTP-запроса к Ozon. Но как только limit-правка выше пустила
+    запрос состава поставки дальше, код первый раз в жизни дошёл до
+    разбора РЕАЛЬНЫХ товарных позиций — а этот путь ни разу не
+    выполнялся на живых данных и мог упасть на чём угодно: элемент
+    списка не словарь, quantity не приводится к числу и т.п. Такое
+    падение не OzonApiError, значит раньше вылетало наружу необработанным
+    — отсюда и голая ошибка сервера вместо красивого сообщения. Теперь: (1)
+    один плохой товар внутри поставки не обрывает всю операцию — просто
+    пропускается со своей записью в errors, остальные поставки и позиции
+    обрабатываются дальше; (2) любая ДРУГАЯ непредвиденная ошибка во всей
+    функции тоже ловится (не только OzonApiError) и возвращается как
+    обычное сообщение об ошибке, а не падением всего запроса."""
     client = client or OzonClient()
     conn = get_conn()
     discovered = 0
@@ -348,21 +364,40 @@ def refresh_supplies(client: OzonClient | None = None) -> dict:
                 items = client.get_supply_bundle([bundle_id])
                 conn.execute("DELETE FROM ozon_supply_items WHERE supply_id = ?", (supply_id,))
                 for it in items:
-                    ozon_sku = it.get("sku")
-                    offer_id = it.get("offer_id")
-                    quantity = int(it.get("quantity") or 0)
-                    name_hint = it.get("name")
-                    product_id = _find_or_create_product(conn, ozon_sku, offer_id, name_hint)
-                    conn.execute(
-                        """INSERT INTO ozon_supply_items
-                           (supply_id, ozon_sku, offer_id, name_hint, quantity, product_id)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (supply_id, ozon_sku, offer_id, name_hint, quantity, product_id),
-                    )
+                    try:
+                        if not isinstance(it, dict):
+                            raise ValueError(f"неожиданный элемент состава поставки: {it!r}")
+                        ozon_sku = it.get("sku")
+                        offer_id = it.get("offer_id")
+                        quantity = int(it.get("quantity") or 0)
+                        name_hint = it.get("name")
+                        product_id = _find_or_create_product(conn, ozon_sku, offer_id, name_hint)
+                        conn.execute(
+                            """INSERT INTO ozon_supply_items
+                               (supply_id, ozon_sku, offer_id, name_hint, quantity, product_id)
+                               VALUES (?, ?, ?, ?, ?, ?)""",
+                            (supply_id, ozon_sku, offer_id, name_hint, quantity, product_id),
+                        )
+                    except Exception as item_err:
+                        # Одна плохая позиция не должна ронять всю сверку —
+                        # остальные поставки/позиции обрабатываются дальше,
+                        # а эта просто отмечается в errors (см. ДЕВЯТАЯ
+                        # ПРАВКА в докстринге функции).
+                        errors.append(
+                            f"Поставка {supply_order_id}: не удалось разобрать товарную "
+                            f"позицию ({item_err}) — пропущена, остальные обработаны."
+                        )
         conn.commit()
     except OzonApiError as e:
         conn.rollback()
         errors.append(f"Не удалось обновить список поставок FBO: {e}")
+    except Exception as e:
+        # Любая другая непредвиденная ошибка (не сбой запроса к Ozon, а,
+        # например, ошибка разбора ответа или записи в БД) — раньше
+        # вылетала наружу голым 500 вместо обычного сообщения об ошибке.
+        # См. ДЕВЯТАЯ ПРАВКА в докстринге функции.
+        conn.rollback()
+        errors.append(f"Непредвиденная ошибка при обновлении списка поставок FBO: {e}")
     finally:
         conn.close()
     return {"discovered": discovered, "errors": errors}
