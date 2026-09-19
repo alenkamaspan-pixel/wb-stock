@@ -159,7 +159,19 @@ class OzonClient:
         одну ошибку — "Limit: value must be inside range (0, 100]". Была
         default=1000, Ozon v4 разрешает максимум 100 за раз — default
         снижен, и любое переданное значение на всякий случай подрезается,
-        чтобы случайный limit>100 не уронил синхронизацию снова."""
+        чтобы случайный limit>100 не уронил синхронизацию снова.
+
+        ДЕСЯТАЯ ПРАВКА (после того, как Алёна показала скриншот из личного
+        кабинета Ozon с 4 реальными заказами «ожидают сборки», а наша
+        синхронизация написала «отправлений 0»): это тот же класс бага,
+        что был со складами (СЕДЬМАЯ ПРАВКА в get_fbs_warehouses) — Ozon,
+        похоже, отвечает 200 OK, но с другой структурой, чем мы ждём
+        (единственный жёстко зашитый ключ был "result" как объект с полем
+        "postings"), и разбор молча даёт пусто без всякой ошибки. Как и
+        там, разбор ответа сделан терпимым к нескольким вероятным формам,
+        и на /ozon-diagnostics добавлен сырой, необработанный ответ этого
+        метода — если и расширенный разбор не попадёт в точку, точная
+        структура будет видна напрямую."""
         limit = max(1, min(int(limit), 100))
         now = dt.datetime.utcnow()
         cutoff_from = (now - dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -175,7 +187,36 @@ class OzonClient:
             "with": {"analytics_data": False, "financial_data": False},
         }
         data = self._post("/v4/posting/fbs/unfulfilled/list", body)
-        return (data or {}).get("result", {})
+        result = (data or {}).get("result", data or {})
+        if isinstance(result, dict):
+            if "postings" not in result:
+                # Явных альтернативных имён поля в доках не нашлось (в
+                # отличие от warehouses/orders) — на всякий случай тоже
+                # проверяем пару правдоподобных вариантов, а не только
+                # "postings", прежде чем сдаться на пустой список.
+                alt = result.get("items") or result.get("orders")
+                if alt is not None:
+                    result = {**result, "postings": alt}
+            return result
+        if isinstance(result, list):
+            return {"postings": result}
+        return {}
+
+    def get_unfulfilled_postings_raw(self, limit: int = 100, offset: int = 0) -> Any:
+        """Тот же вызов, что get_unfulfilled_postings, но БЕЗ разбора ответа —
+        только для /ozon-diagnostics (см. get_fbs_warehouses_raw выше)."""
+        limit = max(1, min(int(limit), 100))
+        now = dt.datetime.utcnow()
+        cutoff_from = (now - dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        cutoff_to = (now + dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        body = {
+            "dir": "asc",
+            "filter": {"cutoff_from": cutoff_from, "cutoff_to": cutoff_to},
+            "limit": limit,
+            "offset": offset,
+            "with": {"analytics_data": False, "financial_data": False},
+        }
+        return self._post("/v4/posting/fbs/unfulfilled/list", body)
 
     def list_postings(
         self, since_iso: str, to_iso: str, limit: int = 100, offset: int = 0,

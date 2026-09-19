@@ -1154,6 +1154,10 @@ def ozon_diagnostics_page():
     _call("Склады FBS (/v2/warehouse/list)", client.get_fbs_warehouses)
     _call("Склады FBS — СЫРОЙ ответ Ozon, без разбора (/v2/warehouse/list)", client.get_fbs_warehouses_raw)
     _call("Ещё не собранные отправления FBS (/v4/posting/fbs/unfulfilled/list)", client.get_unfulfilled_postings)
+    _call(
+        "Ещё не собранные отправления FBS — СЫРОЙ ответ, без разбора (/v4/posting/fbs/unfulfilled/list)",
+        client.get_unfulfilled_postings_raw,
+    )
     _call("Список ID поставок FBO (/v3/supply-order/list)", client.list_supply_orders)
 
     # Состав поставок FBO не переносится на остаток («В поставке нет ни
