@@ -117,7 +117,7 @@ class OzonClient:
         return (data or {}).get("result", [])
 
     # --------------------------------------------------------- FBS-заказы
-    def get_unfulfilled_postings(self, limit: int = 1000, offset: int = 0) -> dict:
+    def get_unfulfilled_postings(self, limit: int = 100, offset: int = 0) -> dict:
         """Отправления FBS, ещё не собранные — аналог WB /orders/new, тот же
         самый безопасный момент для списания остатка.
 
@@ -128,7 +128,14 @@ class OzonClient:
         независимым источникам, отключение было ещё 01.06.2026) и filter
         теперь всегда содержит непустой cutoff_from/cutoff_to — широкое
         окно вместо пустого объекта, чтобы условие на сервере не ловило
-        рассинхрон дат."""
+        рассинхрон дат.
+
+        ВТОРАЯ ПРАВКА (после /ozon-diagnostics): live-ответ показал ещё
+        одну ошибку — "Limit: value must be inside range (0, 100]". Была
+        default=1000, Ozon v4 разрешает максимум 100 за раз — default
+        снижен, и любое переданное значение на всякий случай подрезается,
+        чтобы случайный limit>100 не уронил синхронизацию снова."""
+        limit = max(1, min(int(limit), 100))
         now = dt.datetime.utcnow()
         cutoff_from = (now - dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         cutoff_to = (now + dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -146,7 +153,7 @@ class OzonClient:
         return (data or {}).get("result", {})
 
     def list_postings(
-        self, since_iso: str, to_iso: str, limit: int = 1000, offset: int = 0,
+        self, since_iso: str, to_iso: str, limit: int = 100, offset: int = 0,
         status: str | None = None,
     ) -> dict:
         """Общий список отправлений FBS за период (для сверки статусов/отмен
@@ -155,8 +162,10 @@ class OzonClient:
 
         Было /v3/posting/fbs/list — не проверено вживую (до этого не
         дошли), но тот же раздел и тот же паттерн устаревания, что и у
-        unfulfilled/list выше, поэтому заменено на /v4/… заранее, тело
-        запроса без изменений."""
+        unfulfilled/list выше, поэтому заменено на /v4/… заранее. Заодно
+        снижен default limit (1000 -> 100) по аналогии с unfulfilled/list
+        выше — у v4-методов этого раздела похоже общий потолок в 100."""
+        limit = max(1, min(int(limit), 100))
         filt: dict = {"since": since_iso, "to": to_iso}
         if status:
             filt["status"] = status
@@ -180,8 +189,15 @@ class OzonClient:
         «Доставка FBO» в официальных доках). Название поля с ID поставок в
         ответе v3 не подтверждено живым запросом — на случай, если Ozon
         переименовал его (или стал сразу отдавать список объектов вместо
-        списка чисел), разбор ответа сделан терпимым к обоим вариантам."""
-        body: dict = {"paging": {"limit": limit}}
+        списка чисел), разбор ответа сделан терпимым к обоим вариантам.
+
+        ВТОРАЯ ПРАВКА (после /ozon-diagnostics): live-ответ показал ошибку
+        "SupplyOrderListRequest.Limit: value must be inside range [1, 100]"
+        — то есть Ozon ждёт поле limit ПРЯМО в теле запроса, а не вложенным
+        в paging, как было раньше (тогда до сервера доходил limit=0 по
+        умолчанию, отсюда и ошибка). Исправлено на плоскую структуру."""
+        limit = max(1, min(int(limit), 100))
+        body: dict = {"limit": limit}
         if states:
             body["filter"] = {"states": states}
         data = self._post("/v3/supply-order/list", body)

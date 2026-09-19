@@ -136,8 +136,19 @@ def sync_fbs_once(client: OzonClient | None = None) -> dict:
     log_lines: list[str] = []
 
     try:
-        result = client.get_unfulfilled_postings()
-        postings = result.get("postings", []) if isinstance(result, dict) else (result or [])
+        # /v4/posting/fbs/unfulfilled/list тоже отдаёт максимум 100 штук за
+        # раз (см. ozon_client.py) — листаем так же, как список отправлений
+        # ниже, с тем же разумным потолком в 20 страниц.
+        postings = []
+        offset = 0
+        page_size = 100
+        for _ in range(20):
+            result = client.get_unfulfilled_postings(limit=page_size, offset=offset)
+            page = result.get("postings", []) if isinstance(result, dict) else (result or [])
+            postings.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
         postings_fetched = len(postings)
 
         for raw in postings:
@@ -195,12 +206,27 @@ def sync_fbs_once(client: OzonClient | None = None) -> dict:
 
     # Сверка отмен — только среди отправлений, у которых остаток числится
     # списанным, за последые 30 дней (Ozon хранит /list за период, не по ID).
+    #
+    # /v4/posting/fbs/list отдаёт максимум 100 штук за раз (см. правку в
+    # ozon_client.py после /ozon-diagnostics) — при большом обороте за 30
+    # дней отправлений может быть больше, поэтому листаем страницами через
+    # offset, пока Ozon не перестанет отдавать полную страницу (с разумным
+    # потолком в 20 страниц = 2000 отправлений, чтобы не уйти в бесконечный
+    # цикл при неожиданном ответе).
     cancelled_reversed = 0
     try:
         since = (dt.datetime.utcnow() - dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         to = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        result = client.list_postings(since, to, limit=1000)
-        postings = result.get("postings", []) if isinstance(result, dict) else (result or [])
+        postings = []
+        offset = 0
+        page_size = 100
+        for _ in range(20):
+            result = client.list_postings(since, to, limit=page_size, offset=offset)
+            page = result.get("postings", []) if isinstance(result, dict) else (result or [])
+            postings.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
         status_by_number = {p.get("posting_number"): p.get("status") for p in postings}
 
         tracked = conn.execute(
