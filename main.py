@@ -1094,7 +1094,14 @@ def ozon_supplies_refresh():
         return redirect(url_for(
             "ozon_page", error="Не заданы OZON_CLIENT_ID / OZON_API_KEY — добавьте их в переменные окружения",
         ))
-    result = ozon_sync.refresh_supplies(OzonClient())
+    try:
+        result = ozon_sync.refresh_supplies(OzonClient())
+    except Exception as e:
+        # Подстраховка сверху над ozon_sync.refresh_supplies (которая теперь
+        # сама ловит почти всё) — чтобы этот маршрут в принципе не мог
+        # вернуть голую страницу "Internal Server Error" вместо обычного
+        # сообщения об ошибке, что бы ни пошло не так.
+        return redirect(url_for("ozon_page", error=f"Непредвиденная ошибка обновления поставок FBO: {e}"))
     if result["errors"]:
         return redirect(url_for("ozon_page", error="; ".join(result["errors"])))
     return redirect(url_for("ozon_page", ok=f"Список поставок обновлён (новых: {result['discovered']})"))
