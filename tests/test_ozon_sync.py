@@ -158,6 +158,53 @@ check("Несопоставленный склад: движение не соз
 check("Несопоставленный склад: предупреждение в message", r5["message"] and "не сопоставлен" in r5["message"])
 conn = get_conn()
 check("Остаток A не тронут несопоставленным складом (всё ещё 100)", get_current_stock(conn, product_a, fbs_wh_id) == 100)
+row = conn.execute(
+    "SELECT stock_deducted FROM ozon_postings WHERE posting_number='POST-UNKNOWN-WH'"
+).fetchone()
+check("Несопоставленный склад: строка сохранена как НЕ списанная", row is not None and row["stock_deducted"] == 0)
+conn.close()
+
+# --- 5b) склад привязали ПОСЛЕ того, как отправление уже было увидено —
+# при следующей синхронизации остаток должен списаться только сейчас, а
+# не остаться забытым навсегда (регрессия, найденная 19.09.2026: сначала
+# сверка молча пропускала уже известные строки независимо от
+# stock_deducted, из-за чего реальные проданные заказы Ozon повисали
+# несписанными даже после того, как склад привязывали на «Склады»).
+conn = get_conn()
+conn.execute(
+    "INSERT INTO warehouses (name, ozon_warehouse_id, is_active, created_at) VALUES ('Поздний склад', 999999, 1, ?)",
+    (now_iso(),),
+)
+late_wh_id = conn.execute("SELECT id FROM warehouses WHERE ozon_warehouse_id=999999").fetchone()["id"]
+conn.commit()
+conn.close()
+
+r5b = ozon_sync.sync_fbs_once(FakeClient(unfulfilled=[{
+    "posting_number": "POST-UNKNOWN-WH",
+    "delivery_method": {"warehouse_id": 999999},
+    "products": [{"sku": 111, "offer_id": "a", "quantity": 1}],
+}]))
+check("Склад привязан позже: движение создано задним числом (1)", r5b["movements_created"] == 1)
+conn = get_conn()
+# late_wh_id — новый склад без движений до этого, поэтому стартовый
+# остаток на нём 0 (в отличие от fbs_wh_id из общей настройки теста).
+check("Склад привязан позже: остаток на новом складе списался (0 -> -1)", get_current_stock(conn, product_a, late_wh_id) == -1)
+row = conn.execute(
+    "SELECT stock_deducted, warehouse_id FROM ozon_postings WHERE posting_number='POST-UNKNOWN-WH'"
+).fetchone()
+check("Склад привязан позже: строка помечена списанной", row["stock_deducted"] == 1)
+check("Склад привязан позже: строка получила правильный warehouse_id", row["warehouse_id"] == late_wh_id)
+conn.close()
+
+# Повторный запуск после дозаписи — не должен списать второй раз
+r5c = ozon_sync.sync_fbs_once(FakeClient(unfulfilled=[{
+    "posting_number": "POST-UNKNOWN-WH",
+    "delivery_method": {"warehouse_id": 999999},
+    "products": [{"sku": 111, "offer_id": "a", "quantity": 1}],
+}]))
+check("Повторный запуск после дозаписи: движений больше нет", r5c["movements_created"] == 0)
+conn = get_conn()
+check("Повторный запуск после дозаписи: остаток не изменился повторно (-1)", get_current_stock(conn, product_a, late_wh_id) == -1)
 conn.close()
 
 # --- 6) алиас по alias_ozon_sku
