@@ -1,20 +1,33 @@
 """
 Клиент для Ozon Seller API.
 
-ВАЖНО ПЕРЕД БОЕВЫМ ЗАПУСКОМ, серьёзнее, чем обычно: в отличие от wb_client.py,
-пути и поля ниже НЕ сверены с живым ответом Ozon — песочница, в которой
-писался этот код, не имеет сетевого доступа к api-seller.ozon.ru (закрыто
-политикой прокси), поэтому проверить реальный JSON не удалось. Пути методов и
-названия полей взяты из официальной документации и нескольких независимых
-open-source клиентов (актуальных на 18.09.2026) и, по всем источникам,
-согласуются друг с другом — но Ozon, как и WB, периодически меняет форматы.
+ОБНОВЛЕНО 18.09.2026 (вторая итерация): первая версия этого файла ссылалась
+на методы, которые Ozon к моменту реального запуска уже отключил — Алёна
+поймала это через /ozon-diagnostics и live-кнопки на странице «Ozon» (три
+живые ошибки: `POST /v1/warehouse/list` -> "obsolete method cannot be used",
+`POST /v3/posting/fbs/unfulfilled/list` -> "mismatch between cutoff &
+delivery date", `POST /v2/supply-order/list` -> 404). Пути ниже заменены на
+актуальные по состоянию на 18.09.2026, сверенные напрямую с официальным
+разделом методов на docs.ozon.ru/api/seller/ (список разделов «Работа со
+складами FBS и rFBS», «Обработка заказов FBS и rFBS», «Доставка FBO»):
+  - склады:        /v1/warehouse/list       -> /v2/warehouse/list
+  - необработанные: /v3/posting/fbs/unfulfilled/list -> /v4/…
+  - список отправлений: /v3/posting/fbs/list -> /v4/… (тот же паттерн
+    устаревания, что и у unfulfilled — на всякий случай заменено заранее)
+  - поставки FBO:   /v2/supply-order/list    -> /v3/supply-order/list
+                     /v2/supply-order/get    -> /v3/supply-order/get
+  - состав поставки: /v1/supply-order/bundle остался тем же путём, но
+    оказался POST, а не GET (в первой версии был ошибочно вызван как GET)
 
-Поэтому первым делом после того, как переменные окружения (OZON_CLIENT_ID,
-OZON_API_KEY) появятся на Railway — зайдите на страницу «Ozon» → «Диагностика»
-и нажмите «Тестовый запрос» (см. app/main.py, /ozon-diagnostics): она делает
-по одному живому вызову каждого метода ниже и показывает сырой ответ Ozon как
-есть. Сверьте его с этим файлом, прежде чем полагаться на автосинхронизацию
-для реальных остатков — ровно как рекомендовано делать с WB в wb_client.py.
+ВАЖНО: сами тела запросов (особенно новые поля фильтра у /v4/…/unfulfilled и
+точная структура фильтра/пагинации у /v3/supply-order/list) по-прежнему НЕ
+сверены байт-в-байт с живым ответом — песочница не имеет сетевого доступа к
+api-seller.ozon.ru. То, что ниже — лучшее приближение по докам и по прошлой
+ошибке (Ozon явно требовал непустой диапазон cutoff_from/cutoff_to для
+unfulfilled-фильтра — теперь он заполняется всегда, широким окном). Если
+после этой правки /ozon-diagnostics или live-кнопки покажут новую ошибку —
+это следующая, более точная подсказка от самого Ozon о том, какое поле
+называется иначе; путь метода к этому моменту уже должен быть верным.
 
 Используются два значения из личного кабинета (Настройки → Seller API):
   - Client-Id — числовой идентификатор кабинета
@@ -24,6 +37,7 @@ OZON_API_KEY) появятся на Railway — зайдите на страни
 заказы FBS, поставки FBO и список складов. Управление тем, что видят
 покупатели на карточке товара, остаётся вне этого приложения.
 """
+import datetime as dt
 import time
 from typing import Any
 
@@ -93,22 +107,42 @@ class OzonClient:
     def get_fbs_warehouses(self) -> list[dict]:
         """Склады FBS/rFBS продавца (не путать со складами FBO — те через
         кластеры, здесь не нужны: поставки FBO у нас идут на единый
-        виртуальный склад «Ozon FBO», см. app/ozon_sync.py)."""
-        data = self._post("/v1/warehouse/list")
+        виртуальный склад «Ozon FBO», см. app/ozon_sync.py).
+
+        Было /v1/warehouse/list — живой ответ Ozon: 400 "obsolete method
+        cannot be used". Заменено на /v2/warehouse/list (актуальный метод
+        того же раздела «Работа со складами FBS и rFBS» в официальных
+        доках), тело запроса пустое, как и было у v1."""
+        data = self._post("/v2/warehouse/list", {})
         return (data or {}).get("result", [])
 
     # --------------------------------------------------------- FBS-заказы
     def get_unfulfilled_postings(self, limit: int = 1000, offset: int = 0) -> dict:
         """Отправления FBS, ещё не собранные — аналог WB /orders/new, тот же
-        самый безопасный момент для списания остатка."""
+        самый безопасный момент для списания остатка.
+
+        Было /v3/posting/fbs/unfulfilled/list с пустым filter={} — живой
+        ответ Ozon: 400 "the mismatch between cutoff & delivery date" (Ozon
+        не смог сам вывести согласованный диапазон дат из пустого фильтра).
+        Заменено на /v4/… (v3 в этом разделе официально отключён — по
+        независимым источникам, отключение было ещё 01.06.2026) и filter
+        теперь всегда содержит непустой cutoff_from/cutoff_to — широкое
+        окно вместо пустого объекта, чтобы условие на сервере не ловило
+        рассинхрон дат."""
+        now = dt.datetime.utcnow()
+        cutoff_from = (now - dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        cutoff_to = (now + dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         body = {
             "dir": "asc",
-            "filter": {},
+            "filter": {
+                "cutoff_from": cutoff_from,
+                "cutoff_to": cutoff_to,
+            },
             "limit": limit,
             "offset": offset,
             "with": {"analytics_data": False, "financial_data": False},
         }
-        data = self._post("/v3/posting/fbs/unfulfilled/list", body)
+        data = self._post("/v4/posting/fbs/unfulfilled/list", body)
         return (data or {}).get("result", {})
 
     def list_postings(
@@ -117,7 +151,12 @@ class OzonClient:
     ) -> dict:
         """Общий список отправлений FBS за период (для сверки статусов/отмен
         и для разовой догрузки истории — аналог WB /orders + /orders/status
-        в одном месте, т.к. Ozon отдаёт статус сразу в самом списке)."""
+        в одном месте, т.к. Ozon отдаёт статус сразу в самом списке).
+
+        Было /v3/posting/fbs/list — не проверено вживую (до этого не
+        дошли), но тот же раздел и тот же паттерн устаревания, что и у
+        unfulfilled/list выше, поэтому заменено на /v4/… заранее, тело
+        запроса без изменений."""
         filt: dict = {"since": since_iso, "to": to_iso}
         if status:
             filt["status"] = status
@@ -128,32 +167,71 @@ class OzonClient:
             "offset": offset,
             "with": {"analytics_data": False, "financial_data": False},
         }
-        data = self._post("/v3/posting/fbs/list", body)
+        data = self._post("/v4/posting/fbs/list", body)
         return (data or {}).get("result", {})
 
     # -------------------------------------------------------- FBO-поставки
     def list_supply_orders(self, states: list[str] | None = None, limit: int = 100) -> list:
         """ID поставок FBO (по умолчанию — все текущие состояния; передайте
-        states, если понадобится сузить, например только подтверждённые)."""
+        states, если понадобится сузить, например только подтверждённые).
+
+        Было /v2/supply-order/list — живой ответ Ozon: 404 page not found.
+        Заменено на /v3/supply-order/list (актуальный метод раздела
+        «Доставка FBO» в официальных доках). Название поля с ID поставок в
+        ответе v3 не подтверждено живым запросом — на случай, если Ozon
+        переименовал его (или стал сразу отдавать список объектов вместо
+        списка чисел), разбор ответа сделан терпимым к обоим вариантам."""
         body: dict = {"paging": {"limit": limit}}
         if states:
             body["filter"] = {"states": states}
-        data = self._post("/v2/supply-order/list", body)
-        return (data or {}).get("supply_order_id", [])
+        data = self._post("/v3/supply-order/list", body)
+        result = (data or {}).get("result", data or {})
+        raw_ids = (
+            result.get("supply_order_id")
+            if isinstance(result, dict) else None
+        )
+        if raw_ids is None and isinstance(result, dict):
+            raw_ids = result.get("supply_order_ids") or result.get("order_ids") or result.get("orders")
+        if raw_ids is None:
+            raw_ids = []
+        # Каждый элемент может оказаться либо просто числом (id), либо
+        # целым объектом поставки (тогда берём из него id).
+        ids = []
+        for item in raw_ids:
+            if isinstance(item, dict):
+                ids.append(item.get("supply_order_id") or item.get("order_id") or item.get("id"))
+            else:
+                ids.append(item)
+        return [i for i in ids if i is not None]
 
     def get_supply_orders_info(self, order_ids: list[int]) -> list[dict]:
-        """Детали по списку поставок FBO (статус, склад назначения и т.п.)."""
+        """Детали по списку поставок FBO (статус, склад назначения и т.п.).
+
+        Было /v2/supply-order/get — заменено на /v3/supply-order/get вслед
+        за /v3/supply-order/list выше (тот же раздел, та же версия API)."""
         if not order_ids:
             return []
-        data = self._post("/v2/supply-order/get", {"order_ids": order_ids})
-        return (data or {}).get("orders", [])
+        data = self._post("/v3/supply-order/get", {"order_ids": order_ids})
+        result = (data or {}).get("result", data or {})
+        if isinstance(result, dict):
+            return result.get("orders") or result.get("supply_orders") or []
+        return result if isinstance(result, list) else []
 
     def get_supply_bundle(self, bundle_ids: list[str]) -> list[dict]:
         """Состав поставки (товары и количества) по bundle_id — bundle_id
         берётся из ответа get_supply_orders_info (поле каждой поставки,
         см. комментарий в ozon_sync.py на случай, если фактическое имя поля
-        в живом ответе окажется другим — сверьте через /ozon-diagnostics)."""
+        в живом ответе окажется другим — сверьте через /ozon-diagnostics).
+
+        Путь /v1/supply-order/bundle остался тем же, но в официальных доках
+        это POST с телом, а не GET с query-параметрами, как было раньше —
+        исправлено (Ozon мог просто игнорировать query-параметры GET и
+        отдавать пустой/некорректный ответ, из-за чего эта часть могла
+        молча не работать даже без явной ошибки)."""
         if not bundle_ids:
             return []
-        data = self._get("/v1/supply-order/bundle", params={"bundle_ids": bundle_ids})
-        return (data or {}).get("items", [])
+        data = self._post("/v1/supply-order/bundle", {"bundle_ids": bundle_ids})
+        result = (data or {}).get("result", data or {})
+        if isinstance(result, dict):
+            return result.get("items", [])
+        return result if isinstance(result, list) else []

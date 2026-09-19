@@ -1144,9 +1144,9 @@ def ozon_diagnostics_page():
         except Exception as e:
             results.append({"title": title, "ok": False, "body": f"Непредвиденная ошибка: {e}"})
 
-    _call("Склады FBS (/v1/warehouse/list)", client.get_fbs_warehouses)
-    _call("Ещё не собранные отправления FBS (/v3/posting/fbs/unfulfilled/list)", client.get_unfulfilled_postings)
-    _call("Список ID поставок FBO (/v2/supply-order/list)", client.list_supply_orders)
+    _call("Склады FBS (/v2/warehouse/list)", client.get_fbs_warehouses)
+    _call("Ещё не собранные отправления FBS (/v4/posting/fbs/unfulfilled/list)", client.get_unfulfilled_postings)
+    _call("Список ID поставок FBO (/v3/supply-order/list)", client.list_supply_orders)
 
     return render_template("ozon_diagnostics.html", results=results)
 
