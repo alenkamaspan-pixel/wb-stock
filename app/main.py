@@ -1145,8 +1145,71 @@ def ozon_diagnostics_page():
             results.append({"title": title, "ok": False, "body": f"Непредвиденная ошибка: {e}"})
 
     _call("Склады FBS (/v2/warehouse/list)", client.get_fbs_warehouses)
+    _call("Склады FBS — СЫРОЙ ответ Ozon, без разбора (/v2/warehouse/list)", client.get_fbs_warehouses_raw)
     _call("Ещё не собранные отправления FBS (/v4/posting/fbs/unfulfilled/list)", client.get_unfulfilled_postings)
     _call("Список ID поставок FBO (/v3/supply-order/list)", client.list_supply_orders)
+
+    # Состав поставок FBO не переносится на остаток («В поставке нет ни
+    # одной позиции») — причина не видна без сырых ответов этих методов,
+    # поэтому добавлены сюда же: берём реальные ID поставок из вызова выше
+    # и цепочкой смотрим, что Ozon возвращает по ним — и разобранную версию
+    # (что реально видит app/ozon_sync.refresh_supplies), и сырой JSON без
+    # разбора (чтобы можно было прицельно поправить имена полей, если
+    # разбор всё ещё угадал не то).
+    try:
+        order_ids_for_diag = client.list_supply_orders()
+    except Exception:
+        order_ids_for_diag = []
+    if order_ids_for_diag:
+        _call(
+            "Инфо по поставкам FBO (/v3/supply-order/get)",
+            lambda: client.get_supply_orders_info(order_ids_for_diag),
+        )
+        _call(
+            "Инфо по поставкам FBO — СЫРОЙ ответ, без разбора (/v3/supply-order/get)",
+            lambda: client.get_supply_orders_info_raw(order_ids_for_diag),
+        )
+        try:
+            infos_for_diag = client.get_supply_orders_info(order_ids_for_diag)
+        except Exception:
+            infos_for_diag = []
+
+        # Тот же поиск bundle_id, что и в app/ozon_sync.refresh_supplies
+        # (включая вложенный список "supplies") — см. правку в ozon_sync.py.
+        bundle_id_for_diag = None
+        for info in infos_for_diag:
+            bundle_id_for_diag = info.get("bundle_id") or info.get("supply_id")
+            if not bundle_id_for_diag:
+                nested = info.get("supplies") or info.get("supply") or info.get("supply_orders") or []
+                if isinstance(nested, dict):
+                    nested = [nested]
+                for sub in nested:
+                    if not isinstance(sub, dict):
+                        continue
+                    bundle_id_for_diag = sub.get("bundle_id") or sub.get("supply_id") or sub.get("id")
+                    if bundle_id_for_diag:
+                        break
+            if bundle_id_for_diag:
+                break
+
+        if bundle_id_for_diag:
+            _call(
+                f"Состав поставки FBO (/v1/supply-order/bundle, bundle_id={bundle_id_for_diag})",
+                lambda: client.get_supply_bundle([bundle_id_for_diag]),
+            )
+            _call(
+                f"Состав поставки FBO — СЫРОЙ ответ, без разбора "
+                f"(/v1/supply-order/bundle, bundle_id={bundle_id_for_diag})",
+                lambda: client.get_supply_bundle_raw([bundle_id_for_diag]),
+            )
+        else:
+            results.append({
+                "title": "Состав поставки FBO (/v1/supply-order/bundle)",
+                "ok": False,
+                "body": "Пропущено: ни в одной поставке (включая вложенный список \"supplies\", "
+                        "если он был) не нашлось поля bundle_id/supply_id/id — см. сырой ответ "
+                        "«Инфо по поставкам FBO» выше, там видно реальную структуру целиком.",
+            })
 
     return render_template("ozon_diagnostics.html", results=results)
 
