@@ -195,9 +195,21 @@ class OzonClient:
         "SupplyOrderListRequest.Limit: value must be inside range [1, 100]"
         — то есть Ozon ждёт поле limit ПРЯМО в теле запроса, а не вложенным
         в paging, как было раньше (тогда до сервера доходил limit=0 по
-        умолчанию, отсюда и ошибка). Исправлено на плоскую структуру."""
+        умолчанию, отсюда и ошибка). Исправлено на плоскую структуру.
+
+        ТРЕТЬЯ ПРАВКА (после /ozon-diagnostics): следующий live-ответ —
+        "SupplyOrderListRequest.SortBy: value must not be in list [0]".
+        Это protobuf-enum поле sort_by, и 0 — его запрещённое значение по
+        умолчанию (когда поле вообще не передано, Ozon сам подставляет 0).
+        Названия конкретных допустимых значений enum'а нигде подтвердить не
+        удалось (сеть до api-seller.ozon.ru по-прежнему недоступна), поэтому
+        передаю просто следующее по порядку значение (1) — это стандартный
+        способ обойти "нельзя 0" у protobuf-enum'ов, когда не известно
+        точное имя. Если и это не то значение — правильный ответ будет
+        видно прямо в следующей ошибке от /ozon-diagnostics (Ozon обычно
+        подсказывает допустимый диапазон/список в самом сообщении)."""
         limit = max(1, min(int(limit), 100))
-        body: dict = {"limit": limit}
+        body: dict = {"limit": limit, "sort_by": 1}
         if states:
             body["filter"] = {"states": states}
         data = self._post("/v3/supply-order/list", body)
