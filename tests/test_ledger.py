@@ -187,4 +187,57 @@ check(
 conn.close()
 conn.close()
 
+# --- Шаг 7: склад WB привязали ПОСЛЕ того, как заказ с него уже был увиден —
+# при следующей синхронизации остаток должен списаться только сейчас, а не
+# остаться забытым навсегда (тот же класс регрессии, что и в
+# tests/test_ozon_sync.py «5b/5c», только для WB — найдено 20.09.2026 на
+# живых данных: склад «ФБС Астр Невиномысск» существовал на WB давно, а в
+# приложении его завели только сейчас, и старые уже увиденные заказы с него
+# остались несписанными). ---
+mock7 = MockWBClient()
+mock7.new_orders_queue = [{"orderId": 3003, "nmId": 999, "skus": ["TESTBARCODE1"], "warehouseId": 777}]
+result7 = sync_once(mock7)
+check("Заказ с ещё не сопоставленного склада: без падения", result7["status"] != "error")
+check("Заказ с ещё не сопоставленного склада: движение не создано", result7["movements_created"] == 0)
+conn = get_conn()
+order7 = conn.execute("SELECT * FROM wb_orders WHERE wb_order_id='3003'").fetchone()
+check("Заказ сохранён как НЕ списанный", order7 is not None and order7["stock_deducted"] == 0)
+check("Заказ сохранён без warehouse_id", order7["warehouse_id"] is None)
+conn.close()
+
+# Склад привязали задним числом (Алёна добавила его на странице «Склады»)
+conn = get_conn()
+conn.execute(
+    "INSERT INTO warehouses (name, wb_warehouse_id, is_active, created_at) VALUES ('Поздний склад WB', 777, 1, ?)",
+    (now_iso(),),
+)
+late_wh_id = conn.execute("SELECT id FROM warehouses WHERE wb_warehouse_id=777").fetchone()["id"]
+conn.commit()
+conn.close()
+
+# WB всё ещё отдаёт этот заказ как "новый" (реалистично для недавнего заказа) —
+# при повторной синхронизации остаток должен списаться задним числом
+mock8 = MockWBClient()
+mock8.new_orders_queue = [{"orderId": 3003, "nmId": 999, "skus": ["TESTBARCODE1"], "warehouseId": 777}]
+result8 = sync_once(mock8)
+check("Склад привязан позже: движение создано задним числом (1)", result8["movements_created"] == 1)
+conn = get_conn()
+check(
+    f"Склад привязан позже: остаток на новом складе списался (0 -> -1)",
+    get_current_stock(conn, product_id, late_wh_id) == -1,
+)
+order8 = conn.execute("SELECT stock_deducted, warehouse_id FROM wb_orders WHERE wb_order_id='3003'").fetchone()
+check("Склад привязан позже: заказ помечен списанным", order8["stock_deducted"] == 1)
+check("Склад привязан позже: заказ получил правильный warehouse_id", order8["warehouse_id"] == late_wh_id)
+conn.close()
+
+# Повторный синк того же заказа — не должен списать второй раз
+mock9 = MockWBClient()
+mock9.new_orders_queue = [{"orderId": 3003, "nmId": 999, "skus": ["TESTBARCODE1"], "warehouseId": 777}]
+result9 = sync_once(mock9)
+check("Повторный синк после дозаписи: движений больше нет", result9["movements_created"] == 0)
+conn = get_conn()
+check("Повторный синк после дозаписи: остаток не изменился повторно (-1)", get_current_stock(conn, product_id, late_wh_id) == -1)
+conn.close()
+
 print("\nВсе проверки бизнес-логики пройдены успешно.")
