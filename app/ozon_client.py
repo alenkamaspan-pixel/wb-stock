@@ -315,10 +315,19 @@ class OzonClient:
         это POST с телом, а не GET с query-параметрами, как было раньше —
         исправлено (Ozon мог просто игнорировать query-параметры GET и
         отдавать пустой/некорректный ответ, из-за чего эта часть могла
-        молча не работать даже без явной ошибки)."""
+        молча не работать даже без явной ошибки).
+
+        ВОСЬМАЯ ПРАВКА (после /ozon-diagnostics): live-ответ — "invalid
+        GetSupplyOrderBundleRequest.Limit: value must be inside range
+        (0, 100]". Как и у /v3/supply-order/list раньше, поле limit
+        обязательно и не имеет безопасного значения по умолчанию (0 —
+        вне допустимого диапазона). Добавлено limit=100 (по одной
+        поставке за раз нам заведомо не нужно больше 100 товарных строк;
+        если у Ozon окажется постраничная выдача и товаров больше —
+        следующая ошибка/пустой хвост это покажет)."""
         if not bundle_ids:
             return []
-        data = self._post("/v1/supply-order/bundle", {"bundle_ids": bundle_ids})
+        data = self._post("/v1/supply-order/bundle", {"bundle_ids": bundle_ids, "limit": 100})
         result = (data or {}).get("result", data or {})
         if isinstance(result, dict):
             return result.get("items", [])
@@ -329,4 +338,4 @@ class OzonClient:
         только для /ozon-diagnostics (см. get_fbs_warehouses_raw выше)."""
         if not bundle_ids:
             return None
-        return self._post("/v1/supply-order/bundle", {"bundle_ids": bundle_ids})
+        return self._post("/v1/supply-order/bundle", {"bundle_ids": bundle_ids, "limit": 100})
