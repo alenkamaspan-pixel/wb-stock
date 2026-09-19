@@ -332,10 +332,40 @@ def sync_once(client: WBClient | None = None) -> dict:
         for raw in new_orders:
             wb_order_id = str(raw.get("orderId") or raw.get("id"))
             existing = conn.execute(
-                "SELECT id FROM wb_orders WHERE wb_order_id = ?", (wb_order_id,)
+                "SELECT * FROM wb_orders WHERE wb_order_id = ?", (wb_order_id,)
             ).fetchone()
             if existing:
-                continue  # уже видели этот заказ
+                # ДВЕНАДЦАТАЯ ПРАВКА (20.09.2026, по образцу ОДИННАДЦАТОЙ
+                # правки в ozon_sync.py — тот же класс бага, только для WB):
+                # раньше уже известный заказ пропускался НАВСЕГДА, даже если
+                # при первом обнаружении склад WB ещё не был привязан на
+                # странице «Склады» (см. ветку else ниже) — остаток так и
+                # оставался несписанным навечно, даже после того как склад
+                # добавляли позже (конкретный случай — «ФБС Астр
+                # Невиномысск»: заказы с него шли давно, склад завели в
+                # приложении только сейчас). Теперь для уже известного, но
+                # ещё не списанного заказа (stock_deducted=0) склад
+                # сопоставляется заново при каждом запуске — и если он
+                # теперь находится, остаток списывается именно сейчас.
+                if existing["stock_deducted"]:
+                    continue  # уже видели и уже списали — пропускаем
+                if existing["warehouse_id"]:
+                    continue  # склад уже был сопоставлен раньше, но почему-то не списано — не трогаем молча
+                wb_warehouse_id = existing["wb_warehouse_id"]
+                warehouse = _find_warehouse_by_wb_id(conn, wb_warehouse_id)
+                if not warehouse:
+                    continue  # склад всё ещё не сопоставлен — как и раньше, ждём
+                _add_movement(
+                    conn, existing["product_id"], warehouse["id"], MovementType.SALE, -existing["quantity"],
+                    MovementSource.WB_SYNC, wb_order_row_id=existing["id"],
+                    comment=f"Заказ WB {wb_order_id} (склад сопоставлен позже исходной синхронизации)",
+                )
+                conn.execute(
+                    "UPDATE wb_orders SET stock_deducted = 1, warehouse_id = ?, updated_at = ? WHERE id = ?",
+                    (warehouse["id"], now_iso(), existing["id"]),
+                )
+                movements_created += 1
+                continue
 
             nm_id = raw.get("nmId")
             barcode = raw.get("skus", [None])[0] if raw.get("skus") else raw.get("barcode")
