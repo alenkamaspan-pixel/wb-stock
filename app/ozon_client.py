@@ -112,9 +112,34 @@ class OzonClient:
         Было /v1/warehouse/list — живой ответ Ozon: 400 "obsolete method
         cannot be used". Заменено на /v2/warehouse/list (актуальный метод
         того же раздела «Работа со складами FBS и rFBS» в официальных
-        доках), тело запроса пустое, как и было у v1."""
+        доках), тело запроса пустое, как и было у v1.
+
+        СЕДЬМАЯ ПРАВКА (после /ozon-diagnostics): метод отвечал без ошибки
+        (200 OK), но с пустым списком [], хотя в личном кабинете Ozon у
+        аккаунта минимум 2 активных FBS-склада (ФБС москва, ФБС ЕКБ). Это
+        не ошибка вида «Ozon подсказал точное поле» — тут Ozon ничего не
+        подсказывает, а просто отвечает 200 с другой структурой, чем мы
+        ожидаем, и разбор молча даёт []. Единственный жёстко зашитый ключ
+        был "result" как список — теперь разбор терпим к нескольким
+        вероятным формам ответа (result как словарь с вложенным списком
+        под "warehouses"/"search"/"items", либо эти же ключи прямо на
+        верхнем уровне без обёртки "result"). Если ни один из этих
+        вариантов не тот — на /ozon-diagnostics теперь дополнительно виден
+        и сырой, необработанный JSON-ответ Ozon по этому методу, так что
+        точное имя поля можно будет увидеть напрямую, а не гадать снова."""
         data = self._post("/v2/warehouse/list", {})
-        return (data or {}).get("result", [])
+        result = (data or {}).get("result", data or {})
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            return result.get("warehouses") or result.get("search") or result.get("items") or []
+        return []
+
+    def get_fbs_warehouses_raw(self) -> Any:
+        """Тот же вызов, что get_fbs_warehouses, но БЕЗ разбора ответа —
+        только для /ozon-diagnostics, чтобы увидеть точную структуру,
+        которую реально прислал Ozon (см. СЕДЬМАЯ ПРАВКА выше)."""
+        return self._post("/v2/warehouse/list", {})
 
     # --------------------------------------------------------- FBS-заказы
     def get_unfulfilled_postings(self, limit: int = 100, offset: int = 0) -> dict:
@@ -273,6 +298,13 @@ class OzonClient:
             return result.get("orders") or result.get("supply_orders") or []
         return result if isinstance(result, list) else []
 
+    def get_supply_orders_info_raw(self, order_ids: list[int]) -> Any:
+        """Тот же вызов, что get_supply_orders_info, но БЕЗ разбора ответа —
+        только для /ozon-diagnostics (см. get_fbs_warehouses_raw выше)."""
+        if not order_ids:
+            return None
+        return self._post("/v3/supply-order/get", {"order_ids": order_ids})
+
     def get_supply_bundle(self, bundle_ids: list[str]) -> list[dict]:
         """Состав поставки (товары и количества) по bundle_id — bundle_id
         берётся из ответа get_supply_orders_info (поле каждой поставки,
@@ -291,3 +323,10 @@ class OzonClient:
         if isinstance(result, dict):
             return result.get("items", [])
         return result if isinstance(result, list) else []
+
+    def get_supply_bundle_raw(self, bundle_ids: list[str]) -> Any:
+        """Тот же вызов, что get_supply_bundle, но БЕЗ разбора ответа —
+        только для /ozon-diagnostics (см. get_fbs_warehouses_raw выше)."""
+        if not bundle_ids:
+            return None
+        return self._post("/v1/supply-order/bundle", {"bundle_ids": bundle_ids})

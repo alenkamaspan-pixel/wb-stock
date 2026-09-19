@@ -272,7 +272,22 @@ def refresh_supplies(client: OzonClient | None = None) -> dict:
     ничего не грузит на остаток, это делает отдельная кнопка «Загрузить
     поставку», см. load_supply ниже). Безопасно вызывать повторно: уже
     известные поставки (по supply_order_id) обновляют только статус/состав,
-    признак loaded не трогается."""
+    признак loaded не трогается.
+
+    ПРАВКА (после /ozon-diagnostics, «в поставке нет ни одной позиции»):
+    bundle_id раньше искался только как ПРЯМОЕ поле объекта поставки
+    (info["bundle_id"] / info["supply_id"]). В официальной схеме
+    SupplyOrderGetResponse у одной заявки на поставку (order) может быть
+    НЕСКОЛЬКО фактических поставок в разные кластеры/склады — они, по
+    документации, лежат вложенным списком (обычно под ключом "supplies"),
+    и именно у элемента ЭТОГО списка есть свой supply_id/bundle_id, а не у
+    самой заявки. Добавлен разбор с проверкой такого вложенного списка —
+    но точное имя ключа и то, что там реально приходит, живым запросом не
+    подтверждено (сеть до api-seller.ozon.ru недоступна). Если после этой
+    правки состав по-прежнему не подтягивается — на /ozon-diagnostics
+    добавлен сырой, необработанный ответ Ozon по обоим методам
+    (get_supply_orders_info_raw, get_supply_bundle_raw), там будет видно
+    точную структуру, и это можно будет поправить прицельно, без гадания."""
     client = client or OzonClient()
     conn = get_conn()
     discovered = 0
@@ -282,11 +297,28 @@ def refresh_supplies(client: OzonClient | None = None) -> dict:
         infos = client.get_supply_orders_info(order_ids) if order_ids else []
 
         for info in infos:
-            supply_order_id = str(info.get("supply_order_id") or info.get("order_id") or "")
+            supply_order_id = str(
+                info.get("supply_order_id") or info.get("order_id") or info.get("id") or ""
+            )
             if not supply_order_id:
                 continue
             status = info.get("state") or info.get("status")
             bundle_id = info.get("bundle_id") or info.get("supply_id")
+            if not bundle_id:
+                # Вложенный список фактических поставок заявки — см. правку
+                # в докстринге выше. Перебираем правдоподобные имена ключа
+                # и по возможности статус тоже берём из первой поставки,
+                # если у самой заявки его не было.
+                nested = info.get("supplies") or info.get("supply") or info.get("supply_orders") or []
+                if isinstance(nested, dict):
+                    nested = [nested]
+                for sub in nested:
+                    if not isinstance(sub, dict):
+                        continue
+                    bundle_id = sub.get("bundle_id") or sub.get("supply_id") or sub.get("id")
+                    status = status or sub.get("state") or sub.get("status")
+                    if bundle_id:
+                        break
 
             existing = conn.execute(
                 "SELECT * FROM ozon_supplies WHERE supply_order_id = ?", (supply_order_id,)
