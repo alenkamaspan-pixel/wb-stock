@@ -82,10 +82,17 @@ class FakeClient:
         self._unfulfilled = unfulfilled or []
         self._listing = listing or []
 
-    def get_unfulfilled_postings(self):
+    def get_unfulfilled_postings(self, limit=100, offset=0):
+        # Тест не эмулирует постраничную выдачу Ozon — всегда отдаёт всё
+        # одной "страницей" (offset игнорируется), этого достаточно, чтобы
+        # проверить логику ozon_sync.py, а не пагинацию клиента.
+        if offset:
+            return {"postings": []}
         return {"postings": self._unfulfilled}
 
-    def list_postings(self, since, to, limit=1000):
+    def list_postings(self, since, to, limit=100, offset=0):
+        if offset:
+            return {"postings": []}
         return {"postings": self._listing}
 
 
