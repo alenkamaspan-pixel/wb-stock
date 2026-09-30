@@ -99,6 +99,32 @@ def get_product_totals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+# 30.09.2026: порог уведомления о низком остатке — по итогам обсуждения с
+# Алёной считается ОДИН РАЗ по сумме сразу по ВСЕМ складам и ФФ на артикул
+# (не отдельно по каждому ФФ, как предлагалось сначала) — сигнал, что скоро
+# может закончиться и, возможно, пора отключать рекламу на этой позиции.
+LOW_STOCK_THRESHOLD = 100
+
+
+def get_low_stock_products(conn: sqlite3.Connection, threshold: int = LOW_STOCK_THRESHOLD) -> list[sqlite3.Row]:
+    """Активные карточки (is_active=1), у которых суммарный остаток по ВСЕМ
+    складам и ФФ упал до threshold единиц или ниже — для баннера на
+    дашборде. Слитые/пустые карточки (is_active=0) сюда не попадают — им
+    больше ничего не продают и не рекламируют."""
+    return conn.execute(
+        """
+        SELECT p.id AS product_id, p.sku, p.name, COALESCE(SUM(m.delta), 0) AS quantity
+        FROM products p
+        LEFT JOIN stock_movements m ON m.product_id = p.id
+        WHERE p.is_active = 1
+        GROUP BY p.id
+        HAVING quantity <= ?
+        ORDER BY quantity ASC
+        """,
+        (threshold,),
+    ).fetchall()
+
+
 def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[dict]:
     """Остатки, сгруппированные по фулфилмент-центрам — для дашборда и для
     раздела «Остатки на дату» в аналитике.
@@ -184,31 +210,34 @@ def get_stock_by_ff(conn: sqlite3.Connection, as_of: str | None = None) -> list[
 def get_stock_locations(conn: sqlite3.Connection) -> list[dict]:
     """Единый список мест хранения для форм прихода/списания/перемещения.
 
-    Один физический ФФ — это ОДНО место, даже если внутри него несколько
-    виртуальных складов WB — поэтому в формах выбирается ФФ целиком, а не
-    конкретный склад внутри него. Под капотом движение по-прежнему пишется
-    против конкретной строки warehouses (это требование схемы и нужно для
-    заказов WB), но для ФФ мы всегда берём один и тот же «канонический»
-    склад этого ФФ — какой именно, пользователю не нужно ни видеть, ни
-    выбирать, потому что физически это всё равно одно и то же место.
+    30.09.2026 (по просьбе Алёны, после разбора расхождений на CR-1324):
+    раньше выбор в форме был только на уровне ФФ целиком, а под капотом
+    всегда молча писался в один и тот же «канонический» склад этого ФФ —
+    из-за этого продажи (которые пишутся в конкретный виртуальный склад WB)
+    и ручные операции (все скопом на одном складе) расходились и было не
+    видно, что реально творится на каждом складе. Теперь форма даёт выбрать
+    КОНКРЕТНЫЙ склад внутри ФФ явно — так Алёна может выставлять и сверять
+    остаток по каждому складу отдельно, а не только по ФФ в целом.
 
-    Склады без привязки к ФФ — самостоятельные физические места, показаны
-    как есть, по одному.
+    Возвращает плоский список, каждая запись — один реальный склад:
+      {"key": "wh:<id>", "label": <название склада>, "warehouse_id": <id>,
+       "ff_id": <id ФФ или None>, "group": <название ФФ для optgroup или None>}
+    Склады без привязки к ФФ (Ozon FBO и т.п.) идут с group=None — их
+    в форме показываем не сгруппированными, как самостоятельные места.
     """
     result = []
     ffs = conn.execute(
         "SELECT * FROM fulfillment_centers WHERE is_active = 1 ORDER BY name"
     ).fetchall()
     for ff in ffs:
-        canonical = conn.execute(
-            "SELECT id FROM warehouses WHERE fulfillment_center_id = ? AND is_active = 1 "
-            "ORDER BY id LIMIT 1",
+        warehouses = conn.execute(
+            "SELECT * FROM warehouses WHERE fulfillment_center_id = ? AND is_active = 1 ORDER BY id",
             (ff["id"],),
-        ).fetchone()
-        if canonical:
+        ).fetchall()
+        for w in warehouses:
             result.append({
-                "key": f"ff:{ff['id']}", "label": f"ФФ «{ff['name']}»",
-                "warehouse_id": canonical["id"], "ff_id": ff["id"],
+                "key": f"wh:{w['id']}", "label": w["name"],
+                "warehouse_id": w["id"], "ff_id": ff["id"], "group": f"ФФ «{ff['name']}»",
             })
     standalone = conn.execute(
         "SELECT * FROM warehouses WHERE is_active = 1 AND fulfillment_center_id IS NULL ORDER BY name"
@@ -216,7 +245,7 @@ def get_stock_locations(conn: sqlite3.Connection) -> list[dict]:
     for w in standalone:
         result.append({
             "key": f"wh:{w['id']}", "label": w["name"],
-            "warehouse_id": w["id"], "ff_id": None,
+            "warehouse_id": w["id"], "ff_id": None, "group": None,
         })
     return result
 

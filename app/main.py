@@ -11,12 +11,12 @@ from flask import Flask, request, session, redirect, url_for, render_template, g
 
 from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL_MINUTES
 from app.database import get_conn, init_db, now_iso
-from app.models import MovementType, MovementSource
+from app.models import MovementType, MovementSource, ExternalWriteoffKind
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
 from app.sync import (
     sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock,
     get_stock_locations, CANCEL_STATUSES, WB_STATUS_CANCEL_VALUES, reconcile_all_orders,
-    undo_history_backfill,
+    undo_history_backfill, get_low_stock_products, LOW_STOCK_THRESHOLD,
 )
 from app.wb_client import WBClient, WBApiError
 from app.analytics import (
@@ -95,9 +95,11 @@ def dashboard():
     product_totals = get_product_totals(g.db)
     grand_total = sum(t["quantity"] for t in product_totals)
     last_run = g.db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
+    low_stock = get_low_stock_products(g.db)
     return render_template(
         "dashboard.html", ff_groups=ff_groups, product_totals=product_totals,
         grand_total=grand_total, last_run=last_run,
+        low_stock=low_stock, low_stock_threshold=LOW_STOCK_THRESHOLD,
     )
 
 
@@ -207,7 +209,9 @@ def movements_page():
         LIMIT 300
         """
     ).fetchall()
-    products = g.db.execute("SELECT * FROM products ORDER BY name").fetchall()
+    # Слитые/пустые карточки-дубли (is_active=0) сюда не попадают — им больше
+    # ничего не списывают и не приходуют, они видны только на «Товары».
+    products = g.db.execute("SELECT * FROM products WHERE is_active = 1 ORDER BY name").fetchall()
     locations = get_stock_locations(g.db)
     user = get_current_user()
     return render_template(
@@ -432,9 +436,8 @@ def wb_diagnostics_undo_backfill():
 
 
 def _resolve_location(conn, location_key: str):
-    """'ff:3' / 'wh:5' -> id канонического склада для записи движения.
-    Один физический ФФ — одно место хранения, поэтому в формах выбирается
-    ФФ целиком, а не конкретный виртуальный склад WB внутри него."""
+    """'wh:5' -> id склада для записи движения (см. get_stock_locations —
+    с 30.09.2026 форма даёт выбрать конкретный склад явно, а не только ФФ)."""
     for loc in get_stock_locations(conn):
         if loc["key"] == location_key:
             return loc["warehouse_id"]
@@ -621,11 +624,103 @@ def movement_delete(movement_id):
     return redirect(url_for("movements_page", ok="Движение удалено"))
 
 
+# --------------------------------------------------------- внешние списания
+# 30.09.2026: «Внешние списания» — один раздел с тремя вкладками (FBO WB /
+# FBO Ozon / FBS Ozon). Логика одна и та же для всех трёх: списание с
+# выбранного склада — обычное stock_movements-списание (уменьшает остаток
+# как любое другое), плюс отдельная строка-журнал в external_writeoffs с
+# отметкой, для какого именно направления оно сделано. Никакого отдельного
+# "баланса" у FBO/FBS-Ozon больше нет — это сознательно, по просьбе Алёны:
+# видно только факт и историю списаний, остаток на маркетплейсе она видит
+# в его личном кабинете. WB FBS сюда не входит — остаётся полностью
+# автоматическим, см. sync.py.
+@app.route("/external-writeoffs")
+@login_required
+def external_writeoffs_page():
+    kind = request.args.get("kind", ExternalWriteoffKind.FBO_WB)
+    if kind not in ExternalWriteoffKind.ALL:
+        kind = ExternalWriteoffKind.FBO_WB
+    entries = g.db.execute(
+        """
+        SELECT e.*, p.name AS product_name, p.sku AS product_sku,
+               w.name AS warehouse_name, f.name AS ff_name, u.username AS created_by_username
+        FROM external_writeoffs e
+        LEFT JOIN products p ON p.id = e.product_id
+        LEFT JOIN stock_movements m ON m.id = e.movement_id
+        LEFT JOIN warehouses w ON w.id = m.warehouse_id
+        LEFT JOIN fulfillment_centers f ON f.id = e.ff_id
+        LEFT JOIN users u ON u.id = e.created_by_id
+        WHERE e.kind = ?
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT 300
+        """,
+        (kind,),
+    ).fetchall()
+    products = g.db.execute("SELECT * FROM products WHERE is_active = 1 ORDER BY name").fetchall()
+    locations = get_stock_locations(g.db)
+    user = get_current_user()
+    return render_template(
+        "external_writeoffs.html",
+        kind=kind, kinds=ExternalWriteoffKind.ALL, kind_labels=ExternalWriteoffKind.LABELS,
+        entries=entries, products=products, locations=locations, can_edit=can_edit(user),
+    )
+
+
+@app.route("/external-writeoffs/new", methods=["POST"])
+@login_required
+def external_writeoff_new():
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("external_writeoffs_page", error="Недостаточно прав"))
+    kind = request.form.get("kind", "")
+    if kind not in ExternalWriteoffKind.ALL:
+        return redirect(url_for("external_writeoffs_page", error="Не указан раздел списания"))
+    product_id = int(request.form["product_id"])
+    warehouse_id = _resolve_location(g.db, request.form["location"])
+    if warehouse_id is None:
+        return redirect(url_for(
+            "external_writeoffs_page", kind=kind, error="Выбранное место хранения не найдено",
+        ))
+    quantity = abs(int(request.form["quantity"]))
+    comment = request.form.get("comment") or None
+    ff_row = g.db.execute(
+        "SELECT fulfillment_center_id FROM warehouses WHERE id = ?", (warehouse_id,)
+    ).fetchone()
+    ff_id = ff_row["fulfillment_center_id"] if ff_row else None
+
+    label = ExternalWriteoffKind.LABELS[kind]
+    writeoff_comment = f"Внешнее списание ({label})" + (f" — {comment}" if comment else "")
+    cur = g.db.execute(
+        """INSERT INTO stock_movements
+           (product_id, warehouse_id, movement_type, delta, source, comment, created_by_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (product_id, warehouse_id, MovementType.WRITEOFF, -quantity, MovementSource.MANUAL,
+         writeoff_comment, user["id"], now_iso()),
+    )
+    movement_id = cur.lastrowid
+    g.db.execute(
+        """INSERT INTO external_writeoffs
+           (kind, product_id, ff_id, quantity, comment, movement_id, created_by_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (kind, product_id, ff_id, quantity, comment, movement_id, user["id"], now_iso()),
+    )
+    g.db.commit()
+    return redirect(url_for(
+        "external_writeoffs_page", kind=kind, ok=f"Списание в «{label}» добавлено",
+    ))
+
+
 # ----------------------------------------------------------------- products
 @app.route("/products")
 @login_required
 def products_page():
-    products = g.db.execute("SELECT * FROM products ORDER BY name").fetchall()
+    # Все карточки (в т.ч. слитые/пустые с is_active=0) — чтобы было видно,
+    # что ещё нужно удалить руками. Сортировка: сначала активные, чтобы
+    # список дублей/пустышек не мешал наверху.
+    products = g.db.execute(
+        "SELECT * FROM products ORDER BY is_active DESC, name"
+    ).fetchall()
+    active_products = [p for p in products if p["is_active"]]
     aliases = g.db.execute(
         """
         SELECT a.*, p.name AS target_name, p.sku AS target_sku
@@ -635,7 +730,7 @@ def products_page():
         """
     ).fetchall()
     return render_template(
-        "products.html", products=products, aliases=aliases,
+        "products.html", products=products, active_products=active_products, aliases=aliases,
         can_edit=can_edit(get_current_user()), is_admin=is_admin(get_current_user()),
     )
 
@@ -704,19 +799,31 @@ def product_edit(product_id):
 @app.route("/products/<int:product_id>/delete", methods=["POST"])
 @login_required
 def product_delete(product_id):
+    # 30.09.2026: по просьбе Алёны — окончательное удаление карточки теперь
+    # РАЗРЕШЕНО, даже если по ней были остатки/движения (раньше блокировалось
+    # FK-ограничением). Это необратимо, поэтому: только admin, только с
+    # осознанным подтверждением (чекбокс на форме — отдельно от JS-подтверждения
+    # в браузере, на случай если кто-то дёрнет форму напрямую), и вся история
+    # движений по товару удаляется вместе с карточкой безвозвратно.
     user = get_current_user()
-    if not can_edit(user):
-        return redirect(url_for("products_page", error="Недостаточно прав"))
-    try:
-        g.db.execute("DELETE FROM products WHERE id = ?", (product_id,))
-        g.db.commit()
-    except sqlite3.IntegrityError:
-        return redirect(url_for(
-            "products_page",
-            error="Нельзя удалить: по этому товару уже есть движения или заказы. "
-                  "Если он больше не нужен — просто переименуйте его через «Изменить».",
-        ))
-    return redirect(url_for("products_page", ok="Товар удалён"))
+    if not is_admin(user):
+        return redirect(url_for("products_page", error="Недостаточно прав — удалять карточки может только admin"))
+    if request.form.get("confirmed") != "yes":
+        return redirect(url_for("products_page", error="Удаление не подтверждено"))
+    product = g.db.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    if not product:
+        return redirect(url_for("products_page", error="Товар не найден"))
+    g.db.execute("DELETE FROM stock_movements WHERE product_id = ?", (product_id,))
+    g.db.execute("UPDATE wb_orders SET product_id = NULL WHERE product_id = ?", (product_id,))
+    g.db.execute("UPDATE ozon_postings SET product_id = NULL WHERE product_id = ?", (product_id,))
+    g.db.execute("UPDATE ozon_supply_items SET product_id = NULL WHERE product_id = ?", (product_id,))
+    g.db.execute("DELETE FROM product_aliases WHERE target_product_id = ?", (product_id,))
+    g.db.execute("DELETE FROM ozon_stock WHERE product_id = ?", (product_id,))
+    g.db.execute("DELETE FROM ozon_stock_log WHERE product_id = ?", (product_id,))
+    g.db.execute("DELETE FROM external_writeoffs WHERE product_id = ?", (product_id,))
+    g.db.execute("DELETE FROM products WHERE id = ?", (product_id,))
+    g.db.commit()
+    return redirect(url_for("products_page", ok=f"Товар «{product['name']}» окончательно удалён"))
 
 
 # --------------------------------------------------------- алиасы товаров
@@ -1088,35 +1195,32 @@ def ozon_sync_fbs_run_now():
 @app.route("/ozon/supplies/refresh", methods=["POST"])
 @login_required
 def ozon_supplies_refresh():
-    if not can_edit(get_current_user()):
-        return redirect(url_for("ozon_page", error="Недостаточно прав"))
-    if not (OZON_CLIENT_ID and OZON_API_KEY):
-        return redirect(url_for(
-            "ozon_page", error="Не заданы OZON_CLIENT_ID / OZON_API_KEY — добавьте их в переменные окружения",
-        ))
-    try:
-        result = ozon_sync.refresh_supplies(OzonClient())
-    except Exception as e:
-        # Подстраховка сверху над ozon_sync.refresh_supplies (которая теперь
-        # сама ловит почти всё) — чтобы этот маршрут в принципе не мог
-        # вернуть голую страницу "Internal Server Error" вместо обычного
-        # сообщения об ошибке, что бы ни пошло не так.
-        return redirect(url_for("ozon_page", error=f"Непредвиденная ошибка обновления поставок FBO: {e}"))
-    if result["errors"]:
-        return redirect(url_for("ozon_page", error="; ".join(result["errors"])))
-    return redirect(url_for("ozon_page", ok=f"Список поставок обновлён (новых: {result['discovered']})"))
+    # ОТКЛЮЧЕНО 30.09.2026: автоматическое обнаружение поставок FBO Ozon —
+    # именно эта автоматика (в паре с сопоставлением карточек "на лету") и
+    # породила часть карточек-призраков, найденных при большой сверке
+    # остатков (см. _merge_known_duplicate_products в database.py). По
+    # решению Алёны FBO Ozon теперь ведётся так же просто и надёжно, как
+    # FBO WB — вручную, через «Внешние списания». Маршрут оставлен (не
+    # удалён), чтобы старая открытая в браузере страница «Ozon» не могла
+    # случайно вызвать 404 — но никакого запроса к Ozon API он больше не
+    # делает. Автоматика FBS Ozon (ozon_sync.sync_fbs_once, кнопка выше)
+    # это не затрагивает и остаётся как есть.
+    return redirect(url_for(
+        "ozon_page",
+        error="Автоматическая загрузка поставок FBO Ozon отключена — теперь FBO Ozon ведётся вручную, "
+              "как и FBO WB, через раздел «Внешние списания». Ничего не выполнено.",
+    ))
 
 
 @app.route("/ozon/supplies/<int:supply_id>/load", methods=["POST"])
 @login_required
 def ozon_supply_load(supply_id):
-    user = get_current_user()
-    if not can_edit(user):
-        return redirect(url_for("ozon_page", error="Недостаточно прав"))
-    result = ozon_sync.load_supply(supply_id, user["id"])
-    if not result["ok"]:
-        return redirect(url_for("ozon_page", error=result["error"]))
-    return redirect(url_for("ozon_page", ok=f"Поставка загружена: позиций перемещено {result['items_moved']}"))
+    # ОТКЛЮЧЕНО 30.09.2026 — см. комментарий в ozon_supplies_refresh выше.
+    return redirect(url_for(
+        "ozon_page",
+        error="Загрузка поставок FBO Ozon отключена — списывайте вручную через раздел «Внешние списания». "
+              "Ничего не выполнено.",
+    ))
 
 
 @app.route("/ozon-diagnostics")
