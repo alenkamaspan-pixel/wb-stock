@@ -220,6 +220,100 @@ def movements_page():
     )
 
 
+# --------------------------------------------------------- сверка остатков
+@app.route("/stock/reconcile")
+@login_required
+def stock_reconcile_page():
+    """30.09.2026 (по просьбе Алёны): страница, где для каждого товара и
+    каждого места хранения (склад внутри ФФ или отдельный склад без ФФ)
+    можно ввести АКТУАЛЬНОЕ фактическое количество — вместо того чтобы
+    вручную считать в уме нужное списание/приход и вбивать его через
+    «Движения». Разница между введённым числом и тем, что сейчас в системе,
+    оформляется одной корректирующей записью (movement_type=adjustment) —
+    это НЕ подмена истории и НЕ удаление старых движений, а обычная новая
+    запись в ledger, как любой приход или списание, просто её размер
+    вычисляется автоматически.
+
+    Сама корректировка выполняется только при отправке формы этой страницы
+    самой Алёной — ничего не списывается и не начисляется за неё заранее."""
+    user = get_current_user()
+    locations = get_stock_locations(g.db)
+    products = g.db.execute(
+        "SELECT id, sku, name FROM products WHERE is_active = 1 ORDER BY name"
+    ).fetchall()
+
+    groups: dict[str, dict] = {}
+    order: list[str] = []
+    for loc in locations:
+        group_label = loc["group"] or "Без ФФ (внутренние или ещё не привязанные склады)"
+        if group_label not in groups:
+            groups[group_label] = {"label": group_label, "locations": []}
+            order.append(group_label)
+        rows = []
+        for p in products:
+            current = get_current_stock(g.db, p["id"], loc["warehouse_id"])
+            rows.append({
+                "product_id": p["id"], "sku": p["sku"], "name": p["name"], "current": current,
+            })
+        groups[group_label]["locations"].append({
+            "warehouse_id": loc["warehouse_id"], "label": loc["label"], "rows": rows,
+        })
+
+    return render_template(
+        "stock_reconcile.html",
+        groups=[groups[k] for k in order],
+        can_edit=can_edit(user),
+    )
+
+
+@app.route("/stock/reconcile", methods=["POST"])
+@login_required
+def stock_reconcile_submit():
+    user = get_current_user()
+    if not can_edit(user):
+        return redirect(url_for("stock_reconcile_page", error="Недостаточно прав"))
+
+    note = request.form.get("note", "").strip()
+    today_msk = (dt.datetime.utcnow() + MSK_OFFSET).strftime("%d.%m.%Y")
+    base_comment = f"Коррекция под фактический остаток ({user['username']}, {today_msk})"
+    if note:
+        base_comment += f" — {note}"
+
+    applied = 0
+    for key, raw_value in request.form.items():
+        if not key.startswith("actual_"):
+            continue
+        raw_value = (raw_value or "").strip()
+        if raw_value == "":
+            continue
+        try:
+            _, warehouse_id_str, product_id_str = key.split("_", 2)
+            warehouse_id = int(warehouse_id_str)
+            product_id = int(product_id_str)
+            actual = int(raw_value)
+        except ValueError:
+            continue
+
+        current = get_current_stock(g.db, product_id, warehouse_id)
+        delta = actual - current
+        if delta == 0:
+            continue
+
+        g.db.execute(
+            """INSERT INTO stock_movements
+               (product_id, warehouse_id, movement_type, delta, source, comment, created_by_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (product_id, warehouse_id, MovementType.ADJUSTMENT, delta, MovementSource.MANUAL,
+             base_comment, user["id"], now_iso()),
+        )
+        applied += 1
+
+    g.db.commit()
+    if applied == 0:
+        return redirect(url_for("stock_reconcile_page", error="Ничего не изменилось — не введено ни одного нового значения"))
+    return redirect(url_for("stock_reconcile_page", ok=f"Внесено корректировок: {applied}"))
+
+
 @app.route("/wb-orders-log")
 @login_required
 def wb_orders_log_page():
