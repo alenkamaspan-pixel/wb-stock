@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Сверка остатков{% endblock %}
+{% block content %}
+<h1>Сверка остатков</h1>
+
+<div class="card">
+  <p class="muted">
+    Здесь можно выставить фактическое количество по каждому товару на каждом складе/ФФ — так, как
+    оно есть на самом деле сейчас. Ничего не нужно пересчитывать в уме: впишите только то, что
+    хотите поправить, остальное можно оставить пустым — оно не изменится. Разница между введённым
+    числом и тем, что сейчас в системе, сохранится отдельной корректирующей записью (её всегда
+    можно посмотреть и, если что, удалить на странице «Движения»).
+  </p>
+</div>
+
+{% if can_edit %}
+<form method="post" action="/stock/reconcile" onsubmit="return confirm('Внести введённые корректировки?');">
+  <div class="card">
+    <div><label>Комментарий к этой сверке (необязательно)</label>
+      <input type="text" name="note" placeholder="например: сверка по факту на складе, сентябрь">
+    </div>
+  </div>
+
+  {% for group in groups %}
+  <div class="card">
+    <h2>{{ group.label }}</h2>
+    {% for loc in group.locations %}
+      {% if group.locations|length > 1 %}<h3 style="margin-top:18px;">{{ loc.label }}</h3>{% endif %}
+      <table>
+        <thead>
+          <tr><th>Товар</th><th>Сейчас в системе</th><th>Фактический остаток</th></tr>
+        </thead>
+        <tbody>
+          {% for row in loc.rows %}
+          <tr>
+            <td>{{ row.name }} <span class="muted">({{ row.sku }})</span></td>
+            <td class="{{ 'qty-negative' if row.current < 0 else '' }}">{{ row.current }}</td>
+            <td>
+              <input type="number" name="actual_{{ loc.warehouse_id }}_{{ row.product_id }}"
+                     placeholder="{{ row.current }}" style="width:110px;">
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <button type="submit">Сохранить корректировки</button>
+</form>
+{% else %}
+<p class="muted">Недостаточно прав для внесения корректировок.</p>
+{% endif %}
+{% endblock %}
