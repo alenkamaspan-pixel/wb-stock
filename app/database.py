@@ -345,6 +345,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
     _merge_known_duplicate_products(conn)
+    _merge_additional_found_products(conn)
+    _apply_field_fixes(conn)
 
 
 # 30.09.2026: разовое слияние карточек-дублей, найденных при большой сверке
@@ -381,6 +383,54 @@ _DEAD_EMPTY_PRODUCT_SKUS = ["2045277239249", "2047460305823", "1.4_2"]
 _MERGE_MIGRATION_NAME = "2026_09_30_merge_duplicate_products"
 
 
+def _get_product_by_sku(conn: sqlite3.Connection, sku):
+    return conn.execute("SELECT * FROM products WHERE sku = ?", (sku,)).fetchone()
+
+
+def _reassign_product_references(conn: sqlite3.Connection, old_id: int, new_id: int) -> None:
+    """Переносит ВСЕ ссылки на карточку old_id на карточку new_id — общая
+    часть логики слияния, используется и большой миграцией дублей от
+    28-30.09.2026, и точечными слияниями отдельных карточек, которые Алёна
+    находит уже после неё (см. _merge_known_duplicate_products и
+    _merge_kp2116_duplicate ниже)."""
+    conn.execute("UPDATE stock_movements SET product_id = ? WHERE product_id = ?", (new_id, old_id))
+    conn.execute("UPDATE wb_orders SET product_id = ? WHERE product_id = ?", (new_id, old_id))
+    conn.execute("UPDATE ozon_postings SET product_id = ? WHERE product_id = ?", (new_id, old_id))
+    conn.execute("UPDATE ozon_supply_items SET product_id = ? WHERE product_id = ?", (new_id, old_id))
+    conn.execute(
+        "UPDATE product_aliases SET target_product_id = ? WHERE target_product_id = ?",
+        (new_id, old_id),
+    )
+    # ozon_stock.product_id уникальный — если у обеих карточек была своя
+    # строка, оставляем только каноническую, чтобы не словить UNIQUE.
+    conn.execute("DELETE FROM ozon_stock WHERE product_id = ?", (old_id,))
+    conn.execute("UPDATE ozon_stock_log SET product_id = ? WHERE product_id = ?", (new_id, old_id))
+    # 30.09.2026: журнал «Внешние списания» тоже ссылается на product_id —
+    # при слиянии переносим и его записи, иначе история списаний дубля
+    # осиротеет (сам movement_id внутри неё уже трогать не надо — эти
+    # движения переехали на канонический product_id строкой выше через
+    # stock_movements).
+    conn.execute("UPDATE external_writeoffs SET product_id = ? WHERE product_id = ?", (new_id, old_id))
+
+
+def _merge_identifier(conn: sqlite3.Connection, canonical_id: int, duplicate_id: int, column: str) -> None:
+    dup_value = conn.execute(
+        f"SELECT {column} AS v FROM products WHERE id = ?", (duplicate_id,)
+    ).fetchone()["v"]
+    if dup_value is None:
+        return
+    canonical_value = conn.execute(
+        f"SELECT {column} AS v FROM products WHERE id = ?", (canonical_id,)
+    ).fetchone()["v"]
+    # Снимаем значение с дубля в любом случае (иначе не удастся ни
+    # переиспользовать его на канонической карточке при совпадающем
+    # UNIQUE-ограничении, ни оставить дубль как есть — он больше не
+    # должен участвовать в сопоставлении новых заказов).
+    conn.execute(f"UPDATE products SET {column} = NULL WHERE id = ?", (duplicate_id,))
+    if canonical_value is None:
+        conn.execute(f"UPDATE products SET {column} = ? WHERE id = ?", (dup_value, canonical_id))
+
+
 def _merge_known_duplicate_products(conn: sqlite3.Connection) -> None:
     already = conn.execute(
         "SELECT 1 FROM schema_migrations WHERE name = ?", (_MERGE_MIGRATION_NAME,)
@@ -388,51 +438,17 @@ def _merge_known_duplicate_products(conn: sqlite3.Connection) -> None:
     if already:
         return
 
-    def _get_product(sku):
-        return conn.execute("SELECT * FROM products WHERE sku = ?", (sku,)).fetchone()
-
-    def _reassign_movements(old_id: int, new_id: int) -> None:
-        conn.execute("UPDATE stock_movements SET product_id = ? WHERE product_id = ?", (new_id, old_id))
-        conn.execute("UPDATE wb_orders SET product_id = ? WHERE product_id = ?", (new_id, old_id))
-        conn.execute("UPDATE ozon_postings SET product_id = ? WHERE product_id = ?", (new_id, old_id))
-        conn.execute("UPDATE ozon_supply_items SET product_id = ? WHERE product_id = ?", (new_id, old_id))
-        conn.execute(
-            "UPDATE product_aliases SET target_product_id = ? WHERE target_product_id = ?",
-            (new_id, old_id),
-        )
-        # ozon_stock.product_id уникальный — если у обеих карточек была своя
-        # строка, оставляем только каноническую, чтобы не словить UNIQUE.
-        conn.execute("DELETE FROM ozon_stock WHERE product_id = ?", (old_id,))
-        conn.execute("UPDATE ozon_stock_log SET product_id = ? WHERE product_id = ?", (new_id, old_id))
-
-    def _merge_identifier(canonical_id: int, duplicate_id: int, column: str) -> None:
-        dup_value = conn.execute(
-            f"SELECT {column} AS v FROM products WHERE id = ?", (duplicate_id,)
-        ).fetchone()["v"]
-        if dup_value is None:
-            return
-        canonical_value = conn.execute(
-            f"SELECT {column} AS v FROM products WHERE id = ?", (canonical_id,)
-        ).fetchone()["v"]
-        # Снимаем значение с дубля в любом случае (иначе не удастся ни
-        # переиспользовать его на канонической карточке при совпадающем
-        # UNIQUE-ограничении, ни оставить дубль как есть — он больше не
-        # должен участвовать в сопоставлении новых заказов).
-        conn.execute(f"UPDATE products SET {column} = NULL WHERE id = ?", (duplicate_id,))
-        if canonical_value is None:
-            conn.execute(f"UPDATE products SET {column} = ? WHERE id = ?", (dup_value, canonical_id))
-
     for group in _DUPLICATE_PRODUCT_GROUPS:
-        canonical = _get_product(group["canonical_sku"])
+        canonical = _get_product_by_sku(conn, group["canonical_sku"])
         if not canonical:
             continue
         for dup_sku in group["duplicate_skus"]:
-            duplicate = _get_product(dup_sku)
+            duplicate = _get_product_by_sku(conn, dup_sku)
             if not duplicate or duplicate["id"] == canonical["id"]:
                 continue
             for column in ("nm_id", "barcode", "ozon_sku"):
-                _merge_identifier(canonical["id"], duplicate["id"], column)
-            _reassign_movements(duplicate["id"], canonical["id"])
+                _merge_identifier(conn, canonical["id"], duplicate["id"], column)
+            _reassign_product_references(conn, duplicate["id"], canonical["id"])
             conn.execute(
                 "UPDATE products SET is_active = 0, "
                 "name = ? WHERE id = ?",
@@ -440,7 +456,7 @@ def _merge_known_duplicate_products(conn: sqlite3.Connection) -> None:
             )
 
     for dead_sku in _DEAD_EMPTY_PRODUCT_SKUS:
-        dead = _get_product(dead_sku)
+        dead = _get_product_by_sku(conn, dead_sku)
         if not dead:
             continue
         conn.execute(
@@ -453,6 +469,149 @@ def _merge_known_duplicate_products(conn: sqlite3.Connection) -> None:
         (_MERGE_MIGRATION_NAME, now_iso()),
     )
     conn.commit()
+
+
+# 30.09.2026 (вторым заходом и далее, уже после большой чистки выше): Алёна
+# просматривает страницу «Товары» на живом сайте и время от времени находит
+# ещё одну пару дублей, которой не было в исходном списке
+# _DUPLICATE_PRODUCT_GROUPS. В отличие от него, здесь каждая запись находится
+# не по sku (он у "битых" карточек часто сам испорчен — например, стал текстом
+# самого nm_id/barcode или заглушкой типа "KP-2116.", похоже на автосоздание
+# карточки при заказе/поставке, для которых ещё не было известно человеко-
+# читаемое название), а по тому идентификатору, который у неё точно на месте
+# (nm_id или ozon_sku). И, в отличие от основной миграции (там у канонической
+# карточки имя уже было в порядке), здесь иногда нужно поправить name/sku и
+# самой "живой" карточке — задаётся через final_name/final_sku, если не
+# нужно — просто None.
+#
+# ВАЖНО: каждая запись отмечается в schema_migrations СВОИМ ОТДЕЛЬНЫМ именем
+# (не одним общим на весь список) — именно поэтому в этот список можно
+# спокойно дописывать новые находки при следующих правках: старые записи уже
+# отмечены выполненными и не повторятся, а новые всё равно применятся при
+# следующем деплое, даже на базе, где часть списка уже когда-то отработала.
+_ADDITIONAL_MERGES = [
+    {
+        # «Машинка кинг KP-2116»: канонической была "битая" карточка WB
+        # (имя/sku = просто числа nm_id/barcode) — чиним ей и имя, и sku.
+        "canonical_match": ("nm_id", 1657611777),
+        "duplicate_match": ("ozon_sku", 5762682150),
+        "final_name": "Машинка кинг KP-2116",
+        "final_sku": "KP-2116",
+    },
+    {
+        # «6 Шейвер CR-1325»: канонической уже была нормальная карточка WB —
+        # просто переносим на неё Ozon SKU дубля-заглушки "шейвер сг-1325",
+        # имя/sku канонической не трогаем (final_name/final_sku = None).
+        "canonical_match": ("nm_id", 1535320580),
+        "duplicate_match": ("ozon_sku", 5799938415),
+        "final_name": None,
+        "final_sku": None,
+    },
+]
+
+
+def _merge_additional_found_products(conn: sqlite3.Connection) -> None:
+    for spec in _ADDITIONAL_MERGES:
+        canonical_col, canonical_val = spec["canonical_match"]
+        duplicate_col, duplicate_val = spec["duplicate_match"]
+        migration_name = (
+            f"2026_09_30_merge_extra_{canonical_col}_{canonical_val}_{duplicate_col}_{duplicate_val}"
+        )
+        already = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE name = ?", (migration_name,)
+        ).fetchone()
+        if already:
+            continue
+
+        canonical = conn.execute(
+            f"SELECT * FROM products WHERE {canonical_col} = ?", (canonical_val,)
+        ).fetchone()
+        duplicate = conn.execute(
+            f"SELECT * FROM products WHERE {duplicate_col} = ?", (duplicate_val,)
+        ).fetchone()
+
+        if canonical and duplicate and canonical["id"] != duplicate["id"]:
+            for column in ("nm_id", "barcode", "ozon_sku"):
+                _merge_identifier(conn, canonical["id"], duplicate["id"], column)
+            _reassign_product_references(conn, duplicate["id"], canonical["id"])
+            final_name = spec["final_name"] or canonical["name"]
+            conn.execute(
+                "UPDATE products SET is_active = 0, name = ? WHERE id = ?",
+                (f"[СЛИТО В «{final_name}» — можно удалить] {duplicate['name']}", duplicate["id"]),
+            )
+            if spec["final_name"] or spec["final_sku"]:
+                new_sku = spec["final_sku"]
+                if new_sku:
+                    # sku UNIQUE — на случай, если новый sku уже почему-то
+                    # занят другой карточкой, не падаем: оставляем текущий.
+                    sku_taken = conn.execute(
+                        "SELECT 1 FROM products WHERE sku = ? AND id != ?", (new_sku, canonical["id"])
+                    ).fetchone()
+                    if sku_taken:
+                        new_sku = None
+                if new_sku:
+                    conn.execute(
+                        "UPDATE products SET name = ?, sku = ? WHERE id = ?",
+                        (final_name, new_sku, canonical["id"]),
+                    )
+                else:
+                    conn.execute("UPDATE products SET name = ? WHERE id = ?", (final_name, canonical["id"]))
+
+        conn.execute(
+            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+            (migration_name, now_iso()),
+        )
+        conn.commit()
+
+
+# 30.09.2026: точечные исправления одного испорченного поля на карточке,
+# которую саму по себе сливать НЕ нужно (в отличие от _ADDITIONAL_MERGES
+# выше) — Алёна замечает такое на живом сайте так же, как и дубли. Тот же
+# принцип: каждая запись отмечена своим отдельным именем в
+# schema_migrations, список можно дописывать новыми находками при
+# следующих правках. Перед изменением поля сверяем его ТЕКУЩЕЕ значение с
+# ожидаемым (expected_current_value) — если оно уже другое (например, Алёна
+# сама успела поправить карточку руками до деплоя), ничего не трогаем, чтобы
+# не затереть её собственную правку чем-то устаревшим.
+_FIELD_FIXES = [
+    {
+        # «1.4 Шейвер CR-9690»: указанный Ozon SKU 5439425498 ошибочный —
+        # такого SKU на Ozon не существует (Алёна проверила и подтвердила
+        # 30.09.2026). Настоящий Ozon SKU этого же физического товара —
+        # 5708841384 — и так уже стоит на отдельной карточке
+        # «1Шейвер CR9690_2»; по решению Алёны эти две карточки НЕ сливаем
+        # (списания и остатки по ним ведутся раздельно намеренно) — тут
+        # только чистим неверное значение, карточка остаётся одна и та же.
+        "match": ("nm_id", 499229213),
+        "column": "ozon_sku",
+        "expected_current_value": 5439425498,
+        "new_value": None,
+    },
+]
+
+
+def _apply_field_fixes(conn: sqlite3.Connection) -> None:
+    for spec in _FIELD_FIXES:
+        match_col, match_val = spec["match"]
+        migration_name = f"2026_09_30_fix_field_{match_col}_{match_val}_{spec['column']}"
+        already = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE name = ?", (migration_name,)
+        ).fetchone()
+        if already:
+            continue
+
+        row = conn.execute(f"SELECT * FROM products WHERE {match_col} = ?", (match_val,)).fetchone()
+        if row and row[spec["column"]] == spec["expected_current_value"]:
+            conn.execute(
+                f"UPDATE products SET {spec['column']} = ? WHERE id = ?",
+                (spec["new_value"], row["id"]),
+            )
+
+        conn.execute(
+            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+            (migration_name, now_iso()),
+        )
+        conn.commit()
 
 
 def now_iso() -> str:
