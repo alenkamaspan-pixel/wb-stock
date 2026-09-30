@@ -140,14 +140,22 @@ check("в группе ФФ нет разбивки по складам (rows)",
 check("в группе ФФ нет разбивки по складам (warehouse_totals)", "warehouse_totals" not in ff_group)
 conn.close()
 
-# --- Шаг 5: get_stock_locations — один ФФ = одно место хранения ---
+# --- Шаг 5: get_stock_locations — 30.09.2026, по просьбе Алёны каждый склад
+# внутри ФФ теперь выбирается явно (а не молча схлопывается на один
+# канонический), чтобы можно было выставлять/сверять остаток по каждому
+# складу отдельно ---
 conn = get_conn()
 locations = get_stock_locations(conn)
 loc_keys = {loc["key"] for loc in locations}
-check(f"ФФ с двумя складами даёт ОДНУ запись в местах хранения, получено {loc_keys}", f"ff:{ff_id}" in loc_keys)
 check(
-    "оба виртуальных склада этого ФФ НЕ фигурируют как отдельные места",
-    f"wh:{warehouse_id}" not in loc_keys and f"wh:{warehouse2_id}" not in loc_keys,
+    f"оба склада этого ФФ фигурируют как отдельные места, получено {loc_keys}",
+    f"wh:{warehouse_id}" in loc_keys and f"wh:{warehouse2_id}" in loc_keys,
+)
+loc_by_key = {loc["key"]: loc for loc in locations}
+check(
+    "оба сгруппированы под одним и тем же названием ФФ",
+    loc_by_key[f"wh:{warehouse_id}"]["group"] == loc_by_key[f"wh:{warehouse2_id}"]["group"]
+    and loc_by_key[f"wh:{warehouse_id}"]["group"] is not None,
 )
 conn.close()
 

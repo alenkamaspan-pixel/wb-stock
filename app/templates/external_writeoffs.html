@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Внешние списания{% endblock %}
+{% block content %}
+<h1>Внешние списания</h1>
+<p class="muted" style="margin-top:-12px; margin-bottom:20px;">
+  Списание товара с ФФ на маркетплейс (FBO WB, FBO Ozon, FBS Ozon) — здесь оно и уменьшает остаток на
+  складе (обычное списание), и записывается в журнал ниже: дата, количество, артикул, комментарий.
+  Отдельного «остатка» на маркетплейсе эта страница больше не ведёт — его видно в личном кабинете
+  соответствующего маркетплейса. Заказы и отмены WB FBS сюда не входят — они по-прежнему полностью
+  автоматические (раздел «Заказы WB»).
+</p>
+
+<div style="display:flex; gap:8px; margin-bottom:18px;">
+  {% for k in kinds %}
+  <a href="/external-writeoffs?kind={{ k }}" class="{{ 'btn' if k == kind else 'btn-secondary' }}">
+    {{ kind_labels[k] }}
+  </a>
+  {% endfor %}
+</div>
+
+{% if can_edit %}
+<div class="card">
+  <h2>Новое списание — {{ kind_labels[kind] }}</h2>
+  <form class="inline" method="post" action="/external-writeoffs/new">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <div><label>Товар</label>
+      <select name="product_id" required>
+        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Откуда (ФФ или склад)</label>
+      <select name="location" required>
+        {% set ns = namespace(open_group=None) %}
+        {% for loc in locations %}
+          {% if loc.group != ns.open_group %}
+            {% if ns.open_group %}</optgroup>{% endif %}
+            {% if loc.group %}<optgroup label="{{ loc.group }}">{% endif %}
+            {% set ns.open_group = loc.group %}
+          {% endif %}
+          <option value="{{ loc.key }}">{{ loc.label }}</option>
+        {% endfor %}
+        {% if ns.open_group %}</optgroup>{% endif %}
+      </select>
+    </div>
+    <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
+    <div><label>Комментарий</label><input type="text" name="comment" placeholder="например, номер поставки/отправления"></div>
+    <button type="submit">Списать в «{{ kind_labels[kind] }}»</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Журнал — {{ kind_labels[kind] }}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Дата</th><th>Товар</th><th>Склад</th><th>ФФ</th><th>Кол-во</th><th>Комментарий</th><th>Кто внёс</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>{{ e.created_at | dtfmt }}</td>
+        <td>{{ e.product_name or '—' }} <span class="muted">({{ e.product_sku }})</span></td>
+        <td>{{ e.warehouse_name or '—' }}</td>
+        <td>
+          {% if e.ff_name %}
+          {% set ff_color = 'ff-color-' ~ (e.ff_id % 6) %}
+          <span class="ff-tag {{ ff_color }}">{{ e.ff_name }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="qty-negative">-{{ e.quantity }}</td>
+        <td class="muted">{{ e.comment or '' }}</td>
+        <td class="muted">{{ e.created_by_username or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">Списаний в «{{ kind_labels[kind] }}» пока не было.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

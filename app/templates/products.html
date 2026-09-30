@@ -20,23 +20,28 @@
 
 <div class="card">
   <h2>Список товаров</h2>
+  <p class="muted">Строки с пометкой «неактивна» — слитые дубли или пустые карточки без движений. Они больше не предлагаются в формах прихода/списания, но остаются здесь, пока их не удалят руками.</p>
   <table>
-    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th><th>SKU Ozon</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th><th>SKU Ozon</th><th>Статус</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for p in products %}
-      <tr>
+      <tr{% if not p.is_active %} style="opacity:0.6;"{% endif %}>
         <td>{{ p.sku }}</td>
         <td>{{ p.name }}</td>
         <td>{{ p.nm_id or '—' }}</td>
         <td>{{ p.barcode or '—' }}</td>
         <td>{{ p.ozon_sku or '—' }}</td>
+        <td>{% if p.is_active %}активна{% else %}<span style="color:#d64545;">неактивна</span>{% endif %}</td>
         {% if can_edit %}
         <td style="white-space:nowrap;">
           <a href="/products/{{ p.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+          {% if is_admin %}
           <form method="post" action="/products/{{ p.id }}/delete" style="display:inline;"
-                onsubmit="return confirm('Удалить товар «{{ p.name }}»? Это возможно, только если по нему ещё не было движений.');">
-            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить</button>
+                onsubmit="if(!confirm('Уверены ли вы, госпожа, что карточку «{{ p.name }}» пора удалить насовсем? Это действие необратимо — вместе с ней удалится вся история движений по ней.')){return false;} this.confirmed.value='yes'; return true;">
+            <input type="hidden" name="confirmed" value="">
+            <button type="submit" class="btn-secondary" style="padding:4px 10px; font-size:13px; color:#d64545;">Удалить навсегда</button>
           </form>
+          {% endif %}
         </td>
         {% endif %}
       </tr>
@@ -62,7 +67,7 @@
       <label>Списывать на товар</label>
       <select name="target_product_id" required>
         <option value="">— выберите —</option>
-        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        {% for p in active_products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
       </select>
     </div>
     <div><label>Комментарий</label><input type="text" name="comment" placeholder="например: вторая карточка на WB"></div>

@@ -54,27 +54,17 @@
 </div>
 
 <div class="card">
-  <h2>Поставки FBO</h2>
+  <h2>Поставки FBO Ozon</h2>
   <p class="muted">
-    Состав и количество вносит менеджер в личном кабинете Ozon — здесь только читаем готовый список и
-    переносим товар на виртуальный склад «Ozon FBO» одной кнопкой. Каждую поставку можно загрузить
-    только один раз.
+    С 30.09.2026 поставки FBO Ozon больше не читаются автоматически из личного кабинета Ozon — как и
+    FBO WB, они ведутся вручную: спишите нужное количество со склада на странице
+    «<a href="/external-writeoffs?kind=fbo_ozon">Внешние списания</a>» (вкладка «FBO Ozon»), это сразу
+    уменьшит остаток и запишет списание в журнал. Таблица ниже — только история поставок, загруженных
+    старым способом до перехода, новые сюда добавляться не будут.
   </p>
-  {% if fbo_source_ff %}
-  <p class="muted">ФФ-источник поставок: <span class="ff-tag ff-color-{{ fbo_source_ff.id % 6 }}">{{ fbo_source_ff.name }}</span></p>
-  {% else %}
-  <p class="muted">ФФ-источник поставок ещё не отмечен — загрузка поставок будет недоступна, пока не
-    отметите его на странице «Склады» (редактирование нужного ФФ).</p>
-  {% endif %}
-  {% if can_edit %}
-  <form method="post" action="/ozon/supplies/refresh">
-    <button type="submit" class="btn-secondary">Обновить список поставок</button>
-  </form>
-  {% endif %}
-
   {% if supplies %}
   <table style="margin-top:16px;">
-    <thead><tr><th>Поставка</th><th>Статус в Ozon</th><th>Позиций</th><th>Штук</th><th>Загружена</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>Поставка</th><th>Статус в Ozon</th><th>Позиций</th><th>Штук</th><th>Загружена</th></tr></thead>
     <tbody>
       {% for s in supplies %}
       <tr>
@@ -83,24 +73,12 @@
         <td>{{ s.items_count }}</td>
         <td>{{ s.total_qty }}</td>
         <td>{{ 'да, ' ~ (s.loaded_at | dtfmt) if s.loaded else 'нет' }}</td>
-        {% if can_edit %}
-        <td>
-          {% if not s.loaded %}
-          <form method="post" action="/ozon/supplies/{{ s.id }}/load" style="display:inline;"
-                onsubmit="return confirm('Загрузить поставку {{ s.supply_order_id }}? Перенесёт весь её состав на «Ozon FBO». Действие одноразовое.');">
-            <button type="submit" style="padding:4px 10px; font-size:13px;">Загрузить поставку</button>
-          </form>
-          {% else %}
-          <span class="muted">уже загружена</span>
-          {% endif %}
-        </td>
-        {% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted" style="margin-top:16px;">Поставок пока нет (или ещё не обновляли список).</p>
+  <p class="muted" style="margin-top:16px;">Поставок по старому способу не было.</p>
   {% endif %}
 </div>
 {% endif %}

@@ -14,7 +14,16 @@
     </div>
     <div><label>Куда (ФФ или склад)</label>
       <select name="location" required>
-        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
+        {% set ns = namespace(open_group=None) %}
+        {% for loc in locations %}
+          {% if loc.group != ns.open_group %}
+            {% if ns.open_group %}</optgroup>{% endif %}
+            {% if loc.group %}<optgroup label="{{ loc.group }}">{% endif %}
+            {% set ns.open_group = loc.group %}
+          {% endif %}
+          <option value="{{ loc.key }}">{{ loc.label }}</option>
+        {% endfor %}
+        {% if ns.open_group %}</optgroup>{% endif %}
       </select>
     </div>
     <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
@@ -37,12 +46,30 @@
     </div>
     <div><label>Откуда</label>
       <select name="from_location" required>
-        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
+        {% set ns = namespace(open_group=None) %}
+        {% for loc in locations %}
+          {% if loc.group != ns.open_group %}
+            {% if ns.open_group %}</optgroup>{% endif %}
+            {% if loc.group %}<optgroup label="{{ loc.group }}">{% endif %}
+            {% set ns.open_group = loc.group %}
+          {% endif %}
+          <option value="{{ loc.key }}">{{ loc.label }}</option>
+        {% endfor %}
+        {% if ns.open_group %}</optgroup>{% endif %}
       </select>
     </div>
     <div><label>Куда</label>
       <select name="to_location" required>
-        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
+        {% set ns = namespace(open_group=None) %}
+        {% for loc in locations %}
+          {% if loc.group != ns.open_group %}
+            {% if ns.open_group %}</optgroup>{% endif %}
+            {% if loc.group %}<optgroup label="{{ loc.group }}">{% endif %}
+            {% set ns.open_group = loc.group %}
+          {% endif %}
+          <option value="{{ loc.key }}">{{ loc.label }}</option>
+        {% endfor %}
+        {% if ns.open_group %}</optgroup>{% endif %}
       </select>
     </div>
     <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
@@ -61,7 +88,16 @@
     </div>
     <div><label>Откуда (ФФ или склад)</label>
       <select name="location" required>
-        {% for loc in locations %}<option value="{{ loc.key }}">{{ loc.label }}</option>{% endfor %}
+        {% set ns = namespace(open_group=None) %}
+        {% for loc in locations %}
+          {% if loc.group != ns.open_group %}
+            {% if ns.open_group %}</optgroup>{% endif %}
+            {% if loc.group %}<optgroup label="{{ loc.group }}">{% endif %}
+            {% set ns.open_group = loc.group %}
+          {% endif %}
+          <option value="{{ loc.key }}">{{ loc.label }}</option>
+        {% endfor %}
+        {% if ns.open_group %}</optgroup>{% endif %}
       </select>
     </div>
     <div><label>Количество</label><input type="number" name="quantity" min="1" required></div>
