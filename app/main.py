@@ -220,48 +220,78 @@ def movements_page():
     )
 
 
+def _reconcile_groups(conn):
+    """30.09.2026 (по просьбе Алёны): группы для страницы «Сверка остатков» —
+    ОДНА строка на товар на каждый ФФ (виртуальные склады внутри ФФ уже
+    просуммированы), плюс отдельная строка на каждый самостоятельный склад
+    без ФФ. Виртуальные склады нарочно не показываются по отдельности: это
+    просто внутренние ярлыки WB для маршрутизации заказов внутри одного и
+    того же физического места (см. get_stock_by_ff) — Алёна сверяет и
+    поправляет остаток по факту на уровне ФФ в целом, а не по каждому
+    виртуальному складу.
+
+    Возвращает список групп: {"label", "warehouse_id" (куда физически
+    попадёт корректировка), "warehouse_ids" (все склады, чей остаток сюда
+    суммируется), "rows": [{"product_id","sku","name","current"}]}."""
+    products = conn.execute(
+        "SELECT id, sku, name FROM products WHERE is_active = 1 ORDER BY name"
+    ).fetchall()
+
+    groups = []
+    ffs = conn.execute(
+        "SELECT * FROM fulfillment_centers WHERE is_active = 1 ORDER BY name"
+    ).fetchall()
+    for ff in ffs:
+        warehouse_ids = [
+            w["id"] for w in conn.execute(
+                "SELECT id FROM warehouses WHERE fulfillment_center_id = ? AND is_active = 1 ORDER BY id",
+                (ff["id"],),
+            ).fetchall()
+        ]
+        if not warehouse_ids:
+            continue
+        rows = []
+        for p in products:
+            current = sum(get_current_stock(conn, p["id"], wid) for wid in warehouse_ids)
+            rows.append({"product_id": p["id"], "sku": p["sku"], "name": p["name"], "current": current})
+        groups.append({
+            "label": f"ФФ «{ff['name']}»", "warehouse_id": warehouse_ids[0],
+            "warehouse_ids": warehouse_ids, "rows": rows,
+        })
+
+    standalone = conn.execute(
+        "SELECT * FROM warehouses WHERE is_active = 1 AND fulfillment_center_id IS NULL ORDER BY name"
+    ).fetchall()
+    for w in standalone:
+        rows = []
+        for p in products:
+            current = get_current_stock(conn, p["id"], w["id"])
+            rows.append({"product_id": p["id"], "sku": p["sku"], "name": p["name"], "current": current})
+        groups.append({
+            "label": w["name"], "warehouse_id": w["id"], "warehouse_ids": [w["id"]], "rows": rows,
+        })
+    return groups
+
+
 # --------------------------------------------------------- сверка остатков
 @app.route("/stock/reconcile")
 @login_required
 def stock_reconcile_page():
     """30.09.2026 (по просьбе Алёны): страница, где для каждого товара и
-    каждого места хранения (склад внутри ФФ или отдельный склад без ФФ)
-    можно ввести АКТУАЛЬНОЕ фактическое количество — вместо того чтобы
-    вручную считать в уме нужное списание/приход и вбивать его через
-    «Движения». Разница между введённым числом и тем, что сейчас в системе,
-    оформляется одной корректирующей записью (movement_type=adjustment) —
-    это НЕ подмена истории и НЕ удаление старых движений, а обычная новая
-    запись в ledger, как любой приход или списание, просто её размер
-    вычисляется автоматически.
+    каждого ФФ (плюс отдельных складов без ФФ) можно ввести АКТУАЛЬНОЕ
+    фактическое количество — вместо того чтобы вручную считать в уме нужное
+    списание/приход и вбивать его через «Движения». Разница между введённым
+    числом и тем, что сейчас в системе, оформляется одной корректирующей
+    записью (movement_type=adjustment) — это НЕ подмена истории и НЕ
+    удаление старых движений, а обычная новая запись в ledger, как любой
+    приход или списание, просто её размер вычисляется автоматически.
 
     Сама корректировка выполняется только при отправке формы этой страницы
     самой Алёной — ничего не списывается и не начисляется за неё заранее."""
     user = get_current_user()
-    locations = get_stock_locations(g.db)
-    products = g.db.execute(
-        "SELECT id, sku, name FROM products WHERE is_active = 1 ORDER BY name"
-    ).fetchall()
-
-    groups: dict[str, dict] = {}
-    order: list[str] = []
-    for loc in locations:
-        group_label = loc["group"] or "Без ФФ (внутренние или ещё не привязанные склады)"
-        if group_label not in groups:
-            groups[group_label] = {"label": group_label, "locations": []}
-            order.append(group_label)
-        rows = []
-        for p in products:
-            current = get_current_stock(g.db, p["id"], loc["warehouse_id"])
-            rows.append({
-                "product_id": p["id"], "sku": p["sku"], "name": p["name"], "current": current,
-            })
-        groups[group_label]["locations"].append({
-            "warehouse_id": loc["warehouse_id"], "label": loc["label"], "rows": rows,
-        })
-
     return render_template(
         "stock_reconcile.html",
-        groups=[groups[k] for k in order],
+        groups=_reconcile_groups(g.db),
         can_edit=can_edit(user),
     )
 
@@ -279,6 +309,13 @@ def stock_reconcile_submit():
     if note:
         base_comment += f" — {note}"
 
+    # warehouse_id (представитель ФФ на форме) -> все склады, чей остаток в
+    # него суммирован при отображении — нужно, чтобы посчитать ту же самую
+    # сумму при сохранении, а не остаток только одного представителя.
+    siblings_by_warehouse: dict[int, list[int]] = {}
+    for group in _reconcile_groups(g.db):
+        siblings_by_warehouse[group["warehouse_id"]] = group["warehouse_ids"]
+
     applied = 0
     for key, raw_value in request.form.items():
         if not key.startswith("actual_"):
@@ -294,7 +331,8 @@ def stock_reconcile_submit():
         except ValueError:
             continue
 
-        current = get_current_stock(g.db, product_id, warehouse_id)
+        warehouse_ids = siblings_by_warehouse.get(warehouse_id, [warehouse_id])
+        current = sum(get_current_stock(g.db, product_id, wid) for wid in warehouse_ids)
         delta = actual - current
         if delta == 0:
             continue
@@ -354,6 +392,13 @@ def wb_diagnostics_page():
     user = get_current_user()
     if not is_admin(user):
         return redirect(url_for("dashboard", error="Недостаточно прав"))
+
+    # --- 0) Ошибки точечных миграций (слияния карточек, исправления полей)
+    # — см. database._merge_additional_found_products: раньше сбой внутри
+    # одной находки проходил незаметно, теперь сохраняется сюда.
+    migration_errors = g.db.execute(
+        "SELECT * FROM migration_errors ORDER BY id DESC LIMIT 50"
+    ).fetchall()
 
     placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
 
@@ -426,6 +471,7 @@ def wb_diagnostics_page():
 
     return render_template(
         "wb_diagnostics.html",
+        migration_errors=migration_errors,
         status_counts=status_counts,
         non_digit_orders=non_digit_orders,
         gating_issues=gating_issues,

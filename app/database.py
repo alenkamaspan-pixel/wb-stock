@@ -244,6 +244,20 @@ CREATE TABLE IF NOT EXISTS external_writeoffs (
     created_by_id INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL
 );
+
+-- 30.09.2026: журнал ошибок точечных миграций (слияния карточек,
+-- исправления полей) — до этого при сбое внутри одной находки строка в
+-- schema_migrations всё равно писалась (или не писалась, но без всякого
+-- следа), и разобраться, что пошло не так, можно было только по логам
+-- Railway, к которым доступа нет. Теперь при сбое любой отдельной находки
+-- (см. _merge_additional_found_products) конкретная ошибка сохраняется сюда
+-- вместо того, чтобы молча остаться неизвестной — видно на /wb-diagnostics.
+CREATE TABLE IF NOT EXISTS migration_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    migration_name TEXT NOT NULL,
+    error_text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -345,8 +359,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
     _merge_known_duplicate_products(conn)
-    _merge_additional_found_products(conn)
+    # ВАЖНО: порядок здесь принципиален для карточки CR-9690 (см. записи
+    # ниже) — сначала чистим у неё ошибочный Ozon SKU (_apply_field_fixes),
+    # ТОЛЬКО ПОТОМ сливаем в неё вторую карточку с настоящим Ozon SKU
+    # (_merge_additional_found_products): перенос идентификатора при слиянии
+    # происходит, только если у канонической карточки поле сейчас пустое
+    # (см. _merge_identifier) — будь порядок обратным, настоящий Ozon SKU
+    # дубля не перенёсся бы, потому что поле было бы всё ещё занято старым
+    # ошибочным значением.
     _apply_field_fixes(conn)
+    _merge_additional_found_products(conn)
 
 
 # 30.09.2026: разовое слияние карточек-дублей, найденных при большой сверке
@@ -507,21 +529,58 @@ _ADDITIONAL_MERGES = [
         "final_name": None,
         "final_sku": None,
     },
+    {
+        # «1.4 Шейвер CR-9690» / «1Шейвер CR9690_2»: изначально (30.09.2026,
+        # первое обсуждение) Алёна попросила эти карточки НЕ сливать — только
+        # почистить у первой ошибочный Ozon SKU (см. _FIELD_FIXES выше).
+        # Позже в тот же день, увидев на дашборде, что остаток по второй
+        # карточке ушёл в минус (-1) при 20 на первой, решила, что раз это
+        # один физический товар — остатки не должны расходиться, и попросила
+        # всё-таки слить. Канонической оставляем «1.4 Шейвер CR-9690» — у неё
+        # настоящие nm_id/штрихкод WB, нужные для автосопоставления заказов.
+        # Итоговый остаток после слияния = сумма обеих карточек (20 + (-1) =
+        # 19 шт.) — это ожидаемо и правильно, отдельно ничего не подгоняем.
+        #
+        # ВАЖНО (найдено 30.09.2026 на боевых данных): дубль-карточку здесь
+        # ищем по sku, А НЕ по ozon_sku, хотя изначально её нашли именно по
+        # ozon_sku 5708841384. Причина: на реальном сайте перенос Ozon SKU на
+        # каноническую карточку УЖЕ произошёл (это самая первая часть
+        # слияния), а вот сама деактивация дубля и перенос остатка — нет
+        # (слияние не дошло до конца по неизвестной причине, см.
+        # migration_errors на /wb-diagnostics). Из-за этого при повторном
+        # запуске поиск дубля ПО ozon_sku находил уже каноническую карточку
+        # (она теперь тоже им владеет) вместо настоящего дубля — искать нужно
+        # по её собственному, никогда не переносимому sku.
+        "canonical_match": ("nm_id", 499229213),
+        "duplicate_match": ("sku", "1Шейвер CR9690_2"),
+        "final_name": None,
+        "final_sku": None,
+    },
 ]
 
 
 def _merge_additional_found_products(conn: sqlite3.Connection) -> None:
+    """30.09.2026, исправлено после того, как выяснилось на боевых данных:
+    раньше отметка "эта находка обработана" (schema_migrations) писалась
+    БЕЗУСЛОВНО в конце, даже если карточки не нашлись или слияние упало с
+    ошибкой на середине — из-за этого слияние CR-9690/CR9690_2 могло
+    навсегда "застрять" наполовину (Ozon SKU уже перенесён, а сама карточка-
+    дубль так и осталась активной сама по себе), и повторный деплой это
+    больше не мог исправить.
+
+    Теперь вместо непрозрачного флага проверяем РЕАЛЬНОЕ состояние: если
+    карточка-дубль уже неактивна — значит, слияние для неё уже случилось
+    (флаг больше не нужен), и так само по себе получается идемпотентно и
+    может повторяться на каждом деплое, пока не получится. Если слияние
+    всё-таки упадёт с ошибкой — она сохраняется в migration_errors (видно на
+    /wb-diagnostics) и не мешает ни другим находкам из этого списка, ни
+    остальным миграциям при запуске."""
     for spec in _ADDITIONAL_MERGES:
         canonical_col, canonical_val = spec["canonical_match"]
         duplicate_col, duplicate_val = spec["duplicate_match"]
         migration_name = (
             f"2026_09_30_merge_extra_{canonical_col}_{canonical_val}_{duplicate_col}_{duplicate_val}"
         )
-        already = conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE name = ?", (migration_name,)
-        ).fetchone()
-        if already:
-            continue
 
         canonical = conn.execute(
             f"SELECT * FROM products WHERE {canonical_col} = ?", (canonical_val,)
@@ -530,7 +589,13 @@ def _merge_additional_found_products(conn: sqlite3.Connection) -> None:
             f"SELECT * FROM products WHERE {duplicate_col} = ?", (duplicate_val,)
         ).fetchone()
 
-        if canonical and duplicate and canonical["id"] != duplicate["id"]:
+        if not canonical or not duplicate or canonical["id"] == duplicate["id"] or not duplicate["is_active"]:
+            # Нечего сливать: одна из карточек не найдена, это уже одна и та
+            # же карточка, или дубль уже неактивен — слияние для него уже
+            # случилось раньше (в этом самом или в предыдущем деплое).
+            continue
+
+        try:
             for column in ("nm_id", "barcode", "ozon_sku"):
                 _merge_identifier(conn, canonical["id"], duplicate["id"], column)
             _reassign_product_references(conn, duplicate["id"], canonical["id"])
@@ -556,12 +621,15 @@ def _merge_additional_found_products(conn: sqlite3.Connection) -> None:
                     )
                 else:
                     conn.execute("UPDATE products SET name = ? WHERE id = ?", (final_name, canonical["id"]))
-
-        conn.execute(
-            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
-            (migration_name, now_iso()),
-        )
-        conn.commit()
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.execute(
+                "INSERT INTO migration_errors (migration_name, error_text, created_at) VALUES (?, ?, ?)",
+                (migration_name, str(e), now_iso()),
+            )
+            conn.commit()
+            continue
 
 
 # 30.09.2026: точечные исправления одного испорченного поля на карточке,
@@ -591,27 +659,35 @@ _FIELD_FIXES = [
 
 
 def _apply_field_fixes(conn: sqlite3.Connection) -> None:
+    """30.09.2026, тот же фикс, что и в _merge_additional_found_products: не
+    отмечаем находку "обработанной" безусловно — если карточка ещё не
+    существует (например, эта точечная правка была написана раньше, чем
+    появился сам товар), пробуем на каждом следующем деплое, пока она не
+    появится, вместо того чтобы навсегда решить, что чинить нечего."""
     for spec in _FIELD_FIXES:
         match_col, match_val = spec["match"]
         migration_name = f"2026_09_30_fix_field_{match_col}_{match_val}_{spec['column']}"
-        already = conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE name = ?", (migration_name,)
-        ).fetchone()
-        if already:
-            continue
 
         row = conn.execute(f"SELECT * FROM products WHERE {match_col} = ?", (match_val,)).fetchone()
-        if row and row[spec["column"]] == spec["expected_current_value"]:
+        if not row or row[spec["column"]] != spec["expected_current_value"]:
+            # Нечего чинить: карточки ещё нет, ИЛИ поле уже не равно
+            # ожидаемому (либо мы его уже сами почистили раньше, либо Алёна
+            # успела поправить руками) — в обоих случаях трогать не нужно.
+            continue
+
+        try:
             conn.execute(
                 f"UPDATE products SET {spec['column']} = ? WHERE id = ?",
                 (spec["new_value"], row["id"]),
             )
-
-        conn.execute(
-            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
-            (migration_name, now_iso()),
-        )
-        conn.commit()
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.execute(
+                "INSERT INTO migration_errors (migration_name, error_text, created_at) VALUES (?, ?, ?)",
+                (migration_name, str(e), now_iso()),
+            )
+            conn.commit()
 
 
 def now_iso() -> str:
