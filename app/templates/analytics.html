@@ -17,7 +17,11 @@
     <div><label>Товар</label>
       <select name="product_id">
         <option value="">— все товары —</option>
-        {% for p in products %}<option value="{{ p.id }}" {% if product_id == p.id %}selected{% endif %}>{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        {% for cat_group in product_groups %}
+        <optgroup label="{{ cat_group.label }}">
+          {% for p in cat_group.entries %}<option value="{{ p.id }}" {% if product_id == p.id %}selected{% endif %}>{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        </optgroup>
+        {% endfor %}
       </select>
     </div>
     <div><label>Окно скорости продаж (дней)</label>

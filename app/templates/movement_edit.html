@@ -7,8 +7,12 @@
   <form class="inline" method="post" action="/movements/{{ m.id }}/edit">
     <div><label>Товар</label>
       <select name="product_id" required>
-        {% for p in products %}
-        <option value="{{ p.id }}" {% if p.id == m.product_id %}selected{% endif %}>{{ p.name }} ({{ p.sku }})</option>
+        {% for cat_group in product_groups %}
+        <optgroup label="{{ cat_group.label }}">
+          {% for p in cat_group.entries %}
+          <option value="{{ p.id }}" {% if p.id == m.product_id %}selected{% endif %}>{{ p.name }} ({{ p.sku }})</option>
+          {% endfor %}
+        </optgroup>
         {% endfor %}
       </select>
     </div>

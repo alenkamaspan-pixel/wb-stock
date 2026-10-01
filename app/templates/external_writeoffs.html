@@ -25,7 +25,11 @@
     <input type="hidden" name="kind" value="{{ kind }}">
     <div><label>Товар</label>
       <select name="product_id" required>
-        {% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        {% for cat_group in product_groups %}
+        <optgroup label="{{ cat_group.label }}">
+          {% for p in cat_group.entries %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        </optgroup>
+        {% endfor %}
       </select>
     </div>
     <div><label>Откуда (ФФ или склад)</label>

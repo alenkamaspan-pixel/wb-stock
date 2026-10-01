@@ -24,9 +24,13 @@
 </div>
 
 {% if low_stock %}
-<div class="card" style="border-color: var(--warning-border); background: var(--warning-bg);">
-  <h2 style="color: var(--warning);">Низкий остаток — {{ low_stock | length }} {{ 'артикул' if low_stock | length == 1 else 'артикула(ов)' }}</h2>
-  <p class="muted" style="color: var(--warning);">
+{# 30.09.2026 (по просьбе Алёны): свёрнуто по умолчанию, чтобы при открытии
+   дашборда не занимало сразу весь экран — раскрывается кликом по заголовку. #}
+<details class="card" style="border-color: var(--warning-border); background: var(--warning-bg);">
+  <summary style="cursor:pointer; color: var(--warning); font-weight:700; font-size:1.17em; list-style:none;">
+    Низкий остаток — {{ low_stock | length }} {{ 'артикул' if low_stock | length == 1 else 'артикула(ов)' }}
+  </summary>
+  <p class="muted" style="color: var(--warning); margin-top:12px;">
     Остаток ≤ {{ low_stock_threshold }} шт. суммарно по всем складам и ФФ — возможно, пора отключать
     рекламу на этой позиции, пока не закончилась совсем.
   </p>
@@ -42,7 +46,7 @@
       {% endfor %}
     </tbody>
   </table>
-</div>
+</details>
 {% endif %}
 
 {% if product_totals %}
@@ -51,14 +55,17 @@
     <h2>Итого по товарам (по всем ФФ и складам сразу)</h2>
     <div class="ff-total-badge {{ 'negative' if grand_total < 0 else '' }}">{{ grand_total }} шт. всего товара</div>
   </div>
+  {% for cat_group in product_groups %}
+  <h3 class="muted" style="margin:16px 0 8px;">{{ cat_group.label }}</h3>
   <div class="stat-grid">
-    {% for t in product_totals %}
+    {% for t in cat_group.entries %}
     <div class="stat-tile {{ 'negative' if t.quantity < 0 else ('zero' if t.quantity == 0 else 'positive') }}">
       <div class="stat-label">{{ t.name }} <span class="stat-sku">({{ t.sku }})</span></div>
       <div class="stat-value">{{ t.quantity }}</div>
     </div>
     {% endfor %}
   </div>
+  {% endfor %}
 </div>
 {% endif %}
 
@@ -71,14 +78,17 @@
       <div class="ff-total-badge {{ 'negative' if group.ff_total < 0 else '' }}">{{ group.ff_total }} шт. всего</div>
     </div>
 
+    {% for cat_group in group.total_groups %}
+    <h3 class="muted" style="margin:16px 0 8px;">{{ cat_group.label }}</h3>
     <div class="stat-grid">
-      {% for t in group.totals %}
+      {% for t in cat_group.entries %}
       <div class="stat-tile {{ 'negative' if t.quantity < 0 else ('zero' if t.quantity == 0 else 'positive') }}">
         <div class="stat-label">{{ t.name }} <span class="stat-sku">({{ t.sku }})</span></div>
         <div class="stat-value">{{ t.quantity }}</div>
       </div>
       {% endfor %}
     </div>
+    {% endfor %}
   </div>
   {% endfor %}
 {% else %}

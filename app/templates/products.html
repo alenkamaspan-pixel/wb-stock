@@ -9,6 +9,12 @@
   <form class="inline" method="post" action="/products/new">
     <div><label>Ваш артикул (SKU)</label><input type="text" name="sku" required></div>
     <div><label>Название</label><input type="text" name="name" required></div>
+    <div><label>Категория</label>
+      <select name="category">
+        <option value="">— без категории —</option>
+        {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+    </div>
     <div><label>Артикул WB (nmId)</label><input type="number" name="nm_id"></div>
     <div><label>Штрихкод (barcode)</label><input type="text" name="barcode"></div>
     <div><label>SKU на Ozon</label><input type="number" name="ozon_sku"></div>
@@ -20,18 +26,46 @@
 
 <div class="card">
   <h2>Список товаров</h2>
-  <p class="muted">Строки с пометкой «неактивна» — слитые дубли или пустые карточки без движений. Они больше не предлагаются в формах прихода/списания, но остаются здесь, пока их не удалят руками.</p>
+  <p class="muted">Сгруппировано по категориям — шейверы с шейверами и т.д. Категорию можно поменять в карточке товара («Изменить»).</p>
+  {% for cat_group in product_groups %}
+  <h3 style="margin:18px 0 8px;">{{ cat_group.label }} <span class="muted">({{ cat_group.entries | length }})</span></h3>
   <table>
-    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th><th>SKU Ozon</th><th>Статус</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th><th>SKU Ozon</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
-      {% for p in products %}
-      <tr{% if not p.is_active %} style="opacity:0.6;"{% endif %}>
+      {% for p in cat_group.entries %}
+      <tr>
         <td>{{ p.sku }}</td>
         <td>{{ p.name }}</td>
         <td>{{ p.nm_id or '—' }}</td>
         <td>{{ p.barcode or '—' }}</td>
         <td>{{ p.ozon_sku or '—' }}</td>
-        <td>{% if p.is_active %}активна{% else %}<span style="color:#d64545;">неактивна</span>{% endif %}</td>
+        {% if can_edit %}
+        <td style="white-space:nowrap;">
+          <a href="/products/{{ p.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endfor %}
+</div>
+
+{% if inactive_products %}
+<div class="card">
+  <h2>Неактивные карточки</h2>
+  <p class="muted">Слитые дубли или пустые карточки без движений. Они больше не предлагаются в формах прихода/списания и не участвуют в категориях выше, но остаются здесь, пока их не удалят руками.</p>
+  <table>
+    <thead><tr><th>SKU</th><th>Название</th><th>nmId</th><th>Штрихкод</th><th>SKU Ozon</th><th>Статус</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for p in inactive_products %}
+      <tr style="opacity:0.6;">
+        <td>{{ p.sku }}</td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.nm_id or '—' }}</td>
+        <td>{{ p.barcode or '—' }}</td>
+        <td>{{ p.ozon_sku or '—' }}</td>
+        <td><span style="color:#d64545;">неактивна</span></td>
         {% if can_edit %}
         <td style="white-space:nowrap;">
           <a href="/products/{{ p.id }}/edit" class="btn btn-secondary" style="padding:4px 10px; font-size:13px;">Изменить</a>
@@ -49,6 +83,7 @@
     </tbody>
   </table>
 </div>
+{% endif %}
 
 {% if is_admin %}
 <div class="card">
@@ -67,7 +102,11 @@
       <label>Списывать на товар</label>
       <select name="target_product_id" required>
         <option value="">— выберите —</option>
-        {% for p in active_products %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        {% for cat_group in product_groups %}
+        <optgroup label="{{ cat_group.label }}">
+          {% for p in cat_group.entries %}<option value="{{ p.id }}">{{ p.name }} ({{ p.sku }})</option>{% endfor %}
+        </optgroup>
+        {% endfor %}
       </select>
     </div>
     <div><label>Комментарий</label><input type="text" name="comment" placeholder="например: вторая карточка на WB"></div>

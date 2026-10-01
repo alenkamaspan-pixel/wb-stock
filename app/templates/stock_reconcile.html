@@ -26,12 +26,14 @@
   {% for group in groups %}
   <div class="card">
     <h2>{{ group.label }}</h2>
-    <table>
+    {% for cat_group in group.row_groups %}
+    <h3 class="muted" style="margin:12px 0 6px;">{{ cat_group.label }}</h3>
+    <table style="margin-bottom:8px;">
       <thead>
         <tr><th>Товар</th><th>Сейчас в системе</th><th>Фактический остаток</th></tr>
       </thead>
       <tbody>
-        {% for row in group.rows %}
+        {% for row in cat_group.entries %}
         <tr>
           <td>{{ row.name }} <span class="muted">({{ row.sku }})</span></td>
           <td class="{{ 'qty-negative' if row.current < 0 else '' }}">{{ row.current }}</td>
@@ -43,6 +45,7 @@
         {% endfor %}
       </tbody>
     </table>
+    {% endfor %}
   </div>
   {% endfor %}
 
