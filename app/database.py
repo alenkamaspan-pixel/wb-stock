@@ -14,6 +14,7 @@ import datetime as dt
 from contextlib import contextmanager
 
 from app.config import DATABASE_PATH
+from app.models import ProductCategory
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -80,6 +81,11 @@ CREATE TABLE IF NOT EXISTS products (
     -- удаление окончательное и необратимое, поэтому его делает только сама
     -- Алёна руками, с подтверждением, на странице «Товары».
     is_active INTEGER NOT NULL DEFAULT 1,
+    -- 30.09.2026 (по просьбе Алёны): категория товара (см. ProductCategory
+    -- в app/models.py) — чтобы список товаров не был «разбросан и
+    -- запутан». NULL = ещё не отнесён ни к одной категории (показывается
+    -- отдельной группой «Без категории», а не теряется молча).
+    category TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -353,6 +359,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
         conn.commit()
 
+    product_category_cols = {row["name"] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+    if "category" not in product_category_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN category TEXT")
+        conn.commit()
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations "
         "(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -369,6 +380,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # ошибочным значением.
     _apply_field_fixes(conn)
     _merge_additional_found_products(conn)
+    _backfill_product_categories(conn)
 
 
 # 30.09.2026: разовое слияние карточек-дублей, найденных при большой сверке
@@ -680,6 +692,52 @@ def _apply_field_fixes(conn: sqlite3.Connection) -> None:
                 f"UPDATE products SET {spec['column']} = ? WHERE id = ?",
                 (spec["new_value"], row["id"]),
             )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.execute(
+                "INSERT INTO migration_errors (migration_name, error_text, created_at) VALUES (?, ?, ?)",
+                (migration_name, str(e), now_iso()),
+            )
+            conn.commit()
+
+
+# 30.09.2026 (по просьбе Алёны): «список товаров разбросан и запутан» —
+# раскладываем уже существующие карточки по категориям один раз, по их
+# собственному sku (он, в отличие от ozon_sku/nm_id, никогда не переносится
+# при слиянии дублей — см. историю CR-9690 выше). Дальше категорию можно
+# свободно менять руками на странице «Товары»: эта раскладка трогает только
+# карточки с ПУСТЫМ (NULL) category — то, что уже проставлено (в т.ч. самой
+# Алёной), никогда не перезаписывается повторно.
+_PRODUCT_CATEGORY_BACKFILL = {
+    "1 Шейвер CR-9690": ProductCategory.SHAVERS,
+    "2 Шейвер CR-827": ProductCategory.SHAVERS,
+    "3 Шейвер CR-9650": ProductCategory.SHAVERS,
+    "4 Шейвер KP-1004": ProductCategory.SHAVERS,
+    "5 шейвер CR-1324": ProductCategory.SHAVERS,
+    "6 Шейвер CR-1325": ProductCategory.SHAVERS,
+    "Электробритва CR-1230 оранжевая ОЗОН": ProductCategory.ELECTRIC_RAZORS,
+    "Электробритва серая KP-1029 ОЗОН": ProductCategory.ELECTRIC_RAZORS,
+    "2281 триммер оранж с сенсор": ProductCategory.TRIMMERS,
+    "Триммер зеленый CR-135 ЮДС": ProductCategory.TRIMMERS,
+    "триммер черный MP 642": ProductCategory.TRIMMERS,
+    "2278 MPRO Машинка оранжевая ЮДС": ProductCategory.CLIPPERS,
+    "Машинка кинг KP-2116": ProductCategory.CLIPPERS,
+    "Блендер белый 767075120": ProductCategory.BLENDERS,
+    "Блендер черный 980103097": ProductCategory.BLENDERS,
+}
+
+
+def _backfill_product_categories(conn: sqlite3.Connection) -> None:
+    for sku, category in _PRODUCT_CATEGORY_BACKFILL.items():
+        migration_name = f"2026_09_30_category_{sku}"
+        row = conn.execute("SELECT id, category FROM products WHERE sku = ?", (sku,)).fetchone()
+        if not row or row["category"] is not None:
+            # Нечего делать: карточки ещё нет, ИЛИ категория уже стоит (в
+            # т.ч. потому что Алёна сама её поменяла руками) — не трогаем.
+            continue
+        try:
+            conn.execute("UPDATE products SET category = ? WHERE id = ?", (category, row["id"]))
             conn.commit()
         except Exception as e:
             conn.rollback()

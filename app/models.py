@@ -44,3 +44,53 @@ class ExternalWriteoffKind:
         FBO_OZON: "FBO Ozon",
         FBS_OZON: "FBS Ozon",
     }
+
+
+# 30.09.2026 (по просьбе Алёны): список товаров был «разбросан и запутан» —
+# вводим фиксированный набор категорий, чтобы товары показывались группами
+# везде, где их выбирают или перечисляют (Товары, Движения, Внешние
+# списания, Сверка остатков, Аналитика). Категория хранится прямо строкой
+# в products.category — отдельной таблицы под категории не заводим, набор
+# закрытый и меняется редко, а нового пока не просили.
+class ProductCategory:
+    SHAVERS = "Шейверы"
+    ELECTRIC_RAZORS = "Электробритвы"
+    TRIMMERS = "Триммеры"
+    CLIPPERS = "Машинки для стрижки"
+    BLENDERS = "Блендеры"
+
+    # Порядок показа везде, где категории выводятся группами.
+    ORDER = (SHAVERS, ELECTRIC_RAZORS, TRIMMERS, CLIPPERS, BLENDERS)
+
+    # Отдельная «корзина» для товаров без категории (например, только что
+    # добавленных и ещё не отнесённых руками) — не входит в ORDER, но
+    # показывается последней группой, если такие товары есть.
+    UNCATEGORIZED_LABEL = "Без категории"
+
+
+def group_by_category(items):
+    """Группирует любой список объектов с ключом "category" (строки
+    products, либо собранные вручную dict-строки вроде строк «Сверки
+    остатков») в фиксированном порядке ProductCategory.ORDER. Всё, чья
+    категория пуста или не входит в известный набор, попадает в отдельную
+    группу "Без категории" последней (а не теряется молча) — так новый,
+    ещё не категоризированный товар всегда виден.
+
+    Возвращает список {"label": <категория>, "entries": [...]}; пустые
+    группы (для которых не нашлось ни одного товара) в результат не
+    попадают.
+
+    ВАЖНО: ключ называется "entries", а не "items" — в Jinja2 обращение
+    вида group.items для обычного dict сначала находит встроенный метод
+    dict.items() и молча возвращает его вместо значения по ключу (та же
+    ловушка с "keys"/"values"), так что в шаблонах нужно использовать
+    именно group.entries."""
+    buckets: dict[str, list] = {label: [] for label in ProductCategory.ORDER}
+    uncategorized = []
+    for item in items:
+        cat = item["category"] if item["category"] in buckets else None
+        (buckets[cat] if cat else uncategorized).append(item)
+    groups = [{"label": label, "entries": v} for label, v in buckets.items() if v]
+    if uncategorized:
+        groups.append({"label": ProductCategory.UNCATEGORIZED_LABEL, "entries": uncategorized})
+    return groups

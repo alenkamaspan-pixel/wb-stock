@@ -11,7 +11,7 @@ from flask import Flask, request, session, redirect, url_for, render_template, g
 
 from app.config import SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_INTERVAL_MINUTES
 from app.database import get_conn, init_db, now_iso
-from app.models import MovementType, MovementSource, ExternalWriteoffKind
+from app.models import MovementType, MovementSource, ExternalWriteoffKind, ProductCategory, group_by_category
 from app.auth import hash_password, verify_password, get_current_user, login_required, can_edit, is_admin
 from app.sync import (
     sync_once, get_stock_table, get_stock_by_ff, get_product_totals, get_current_stock,
@@ -87,6 +87,19 @@ def logout():
     return redirect(url_for("login"))
 
 
+# 30.09.2026 (по просьбе Алёны): «шейверы стояли с шейверами и т.д.» — многие
+# места (дашборд, «Сверка остатков») строят свои собственные строки-итоги
+# {"product_id", ...}, а не отдают сами строки products, поэтому категорию к
+# ним нужно подмешать отдельно, по product_id. Один запрос на рендер страницы,
+# не в цикле.
+def _category_by_product_id(conn):
+    return {r["id"]: r["category"] for r in conn.execute("SELECT id, category FROM products").fetchall()}
+
+
+def _group_totals_by_category(totals, category_by_id):
+    return group_by_category([dict(t, category=category_by_id.get(t["product_id"])) for t in totals])
+
+
 # ---------------------------------------------------------------- dashboard
 @app.route("/")
 @login_required
@@ -96,9 +109,15 @@ def dashboard():
     grand_total = sum(t["quantity"] for t in product_totals)
     last_run = g.db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
     low_stock = get_low_stock_products(g.db)
+
+    category_by_id = _category_by_product_id(g.db)
+    product_groups = _group_totals_by_category(product_totals, category_by_id)
+    for group in ff_groups:
+        group["total_groups"] = _group_totals_by_category(group["totals"], category_by_id)
+
     return render_template(
         "dashboard.html", ff_groups=ff_groups, product_totals=product_totals,
-        grand_total=grand_total, last_run=last_run,
+        product_groups=product_groups, grand_total=grand_total, last_run=last_run,
         low_stock=low_stock, low_stock_threshold=LOW_STOCK_THRESHOLD,
     )
 
@@ -153,6 +172,7 @@ def analytics_page():
         "net_sold": sum(r["net_sold"] for r in period_stats),
     }
     cancellations_total = sum(r["cancelled_qty"] for r in cancellations)
+    product_groups = group_by_category(filters["products"])
 
     return render_template(
         "analytics.html",
@@ -163,6 +183,7 @@ def analytics_page():
         velocity=velocity, ranking=ranking, ff_comparison=ff_comparison,
         cancellations=cancellations, cancellations_total=cancellations_total,
         journal=journal, ff_list=filters["ff_list"], products=filters["products"],
+        product_groups=product_groups,
     )
 
 
@@ -212,10 +233,11 @@ def movements_page():
     # Слитые/пустые карточки-дубли (is_active=0) сюда не попадают — им больше
     # ничего не списывают и не приходуют, они видны только на «Товары».
     products = g.db.execute("SELECT * FROM products WHERE is_active = 1 ORDER BY name").fetchall()
+    product_groups = group_by_category(products)
     locations = get_stock_locations(g.db)
     user = get_current_user()
     return render_template(
-        "movements.html", movements=movements, products=products,
+        "movements.html", movements=movements, products=products, product_groups=product_groups,
         locations=locations, can_edit=can_edit(user),
     )
 
@@ -232,9 +254,11 @@ def _reconcile_groups(conn):
 
     Возвращает список групп: {"label", "warehouse_id" (куда физически
     попадёт корректировка), "warehouse_ids" (все склады, чей остаток сюда
-    суммируется), "rows": [{"product_id","sku","name","current"}]}."""
+    суммируется), "row_groups": [{"label" (категория), "items": [{"product_id",
+    "sku","name","current"}]}]} — строки сгруппированы по категории товара
+    (30.09.2026, по просьбе Алёны), чтобы шейверы стояли с шейверами и т.д."""
     products = conn.execute(
-        "SELECT id, sku, name FROM products WHERE is_active = 1 ORDER BY name"
+        "SELECT id, sku, name, category FROM products WHERE is_active = 1 ORDER BY name"
     ).fetchall()
 
     groups = []
@@ -253,10 +277,13 @@ def _reconcile_groups(conn):
         rows = []
         for p in products:
             current = sum(get_current_stock(conn, p["id"], wid) for wid in warehouse_ids)
-            rows.append({"product_id": p["id"], "sku": p["sku"], "name": p["name"], "current": current})
+            rows.append({
+                "product_id": p["id"], "sku": p["sku"], "name": p["name"],
+                "category": p["category"], "current": current,
+            })
         groups.append({
             "label": f"ФФ «{ff['name']}»", "warehouse_id": warehouse_ids[0],
-            "warehouse_ids": warehouse_ids, "rows": rows,
+            "warehouse_ids": warehouse_ids, "row_groups": group_by_category(rows),
         })
 
     standalone = conn.execute(
@@ -266,9 +293,13 @@ def _reconcile_groups(conn):
         rows = []
         for p in products:
             current = get_current_stock(conn, p["id"], w["id"])
-            rows.append({"product_id": p["id"], "sku": p["sku"], "name": p["name"], "current": current})
+            rows.append({
+                "product_id": p["id"], "sku": p["sku"], "name": p["name"],
+                "category": p["category"], "current": current,
+            })
         groups.append({
-            "label": w["name"], "warehouse_id": w["id"], "warehouse_ids": [w["id"]], "rows": rows,
+            "label": w["name"], "warehouse_id": w["id"], "warehouse_ids": [w["id"]],
+            "row_groups": group_by_category(rows),
         })
     return groups
 
@@ -693,8 +724,11 @@ def movement_edit_form(movement_id):
                   "вместе) и внесите заново с нужным количеством.",
         ))
     products = g.db.execute("SELECT * FROM products ORDER BY name").fetchall()
+    product_groups = group_by_category(products)
     warehouses = g.db.execute("SELECT * FROM warehouses WHERE is_active = 1 ORDER BY name").fetchall()
-    return render_template("movement_edit.html", m=m, products=products, warehouses=warehouses)
+    return render_template(
+        "movement_edit.html", m=m, products=products, product_groups=product_groups, warehouses=warehouses,
+    )
 
 
 @app.route("/movements/<int:movement_id>/edit", methods=["POST"])
@@ -797,12 +831,14 @@ def external_writeoffs_page():
         (kind,),
     ).fetchall()
     products = g.db.execute("SELECT * FROM products WHERE is_active = 1 ORDER BY name").fetchall()
+    product_groups = group_by_category(products)
     locations = get_stock_locations(g.db)
     user = get_current_user()
     return render_template(
         "external_writeoffs.html",
         kind=kind, kinds=ExternalWriteoffKind.ALL, kind_labels=ExternalWriteoffKind.LABELS,
-        entries=entries, products=products, locations=locations, can_edit=can_edit(user),
+        entries=entries, products=products, product_groups=product_groups,
+        locations=locations, can_edit=can_edit(user),
     )
 
 
@@ -861,6 +897,12 @@ def products_page():
         "SELECT * FROM products ORDER BY is_active DESC, name"
     ).fetchall()
     active_products = [p for p in products if p["is_active"]]
+    inactive_products = [p for p in products if not p["is_active"]]
+    # 30.09.2026 (по просьбе Алёны): список товаров группируем по категориям
+    # («шейверы с шейверами» и т.д.) — только среди активных, неактивные
+    # (слитые дубли/пустышки) категоризировать не имеет смысла, они и так
+    # показаны отдельным списком ниже.
+    product_groups = group_by_category(active_products)
     aliases = g.db.execute(
         """
         SELECT a.*, p.name AS target_name, p.sku AS target_sku
@@ -870,7 +912,9 @@ def products_page():
         """
     ).fetchall()
     return render_template(
-        "products.html", products=products, active_products=active_products, aliases=aliases,
+        "products.html", products=products, active_products=active_products,
+        inactive_products=inactive_products, product_groups=product_groups,
+        categories=ProductCategory.ORDER, aliases=aliases,
         can_edit=can_edit(get_current_user()), is_admin=is_admin(get_current_user()),
     )
 
@@ -886,11 +930,15 @@ def product_new():
     nm_id = request.form.get("nm_id", "").strip()
     barcode = request.form.get("barcode", "").strip()
     ozon_sku = request.form.get("ozon_sku", "").strip()
+    category = request.form.get("category", "").strip() or None
+    if category not in ProductCategory.ORDER:
+        category = None
     try:
         g.db.execute(
-            "INSERT INTO products (sku, nm_id, barcode, ozon_sku, name, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO products (sku, nm_id, barcode, ozon_sku, name, category, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (sku, int(nm_id) if nm_id else None, barcode or None, int(ozon_sku) if ozon_sku else None,
-             name, now_iso()),
+             name, category, now_iso()),
         )
         g.db.commit()
     except Exception as e:
@@ -907,7 +955,7 @@ def product_edit_form(product_id):
     product = g.db.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
     if not product:
         return redirect(url_for("products_page", error="Товар не найден"))
-    return render_template("product_edit.html", product=product)
+    return render_template("product_edit.html", product=product, categories=ProductCategory.ORDER)
 
 
 @app.route("/products/<int:product_id>/edit", methods=["POST"])
@@ -921,11 +969,15 @@ def product_edit(product_id):
     nm_id = request.form.get("nm_id", "").strip()
     barcode = request.form.get("barcode", "").strip()
     ozon_sku = request.form.get("ozon_sku", "").strip()
+    category = request.form.get("category", "").strip() or None
+    if category not in ProductCategory.ORDER:
+        category = None
     try:
         g.db.execute(
-            "UPDATE products SET sku = ?, name = ?, nm_id = ?, barcode = ?, ozon_sku = ? WHERE id = ?",
+            "UPDATE products SET sku = ?, name = ?, nm_id = ?, barcode = ?, ozon_sku = ?, category = ? "
+            "WHERE id = ?",
             (sku, name, int(nm_id) if nm_id else None, barcode or None,
-             int(ozon_sku) if ozon_sku else None, product_id),
+             int(ozon_sku) if ozon_sku else None, category, product_id),
         )
         g.db.commit()
     except sqlite3.IntegrityError:
